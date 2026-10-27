@@ -95,8 +95,8 @@ final class SavedShortsViewController: UIViewController {
 
     override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
         super.viewWillTransition(to: size, with: coordinator)
-        coordinator.animate(alongsideTransition: { _ in
-            self.layout.invalidateLayout()
+        coordinator.animate(alongsideTransition: { [weak self] _ in
+            self?.layout.invalidateLayout()
         }, completion: nil)
     }
 
@@ -117,6 +117,7 @@ final class SavedShortsViewController: UIViewController {
         emptyState.isHidden = true
         view.addSubview(emptyState)
 
+        preview.translatesAutoresizingMaskIntoConstraints = false
         preview.alpha = 0.0
         preview.isHidden = true
         preview.onClose = { [weak self] in
@@ -216,9 +217,9 @@ final class SavedShortsViewController: UIViewController {
 
         let work = DispatchWorkItem { [weak self] in
             guard let self = self, self.previewVideoId == short.videoId else { return }
-            FlowApp.shared.youtubeAPI.player(videoId: short.videoId) { result in
+            FlowApp.shared.youtubeAPI.player(videoId: short.videoId) { [weak self] result in
                 DispatchQueue.main.async {
-                    guard self.previewVideoId == short.videoId else { return }
+                    guard let self = self, self.previewVideoId == short.videoId else { return }
                     guard case .success(let player) = result,
                           let item = ShortsViewModel.makeItem(from: player) else {
                         self.endPreview()
@@ -252,16 +253,20 @@ final class SavedShortsViewController: UIViewController {
                 self?.open(short)
             },
             FlowActionSheetContent.Action(title: "Preview", icon: .shorts) { [weak self] in
-                self?.beginPreview(short)
+                // Let the sheet finish dismissing so the preview is not revealed underneath it.
+                DispatchQueue.main.asyncAfter(deadline: .now() + FlowMotion.emphasized) {
+                    self?.beginPreview(short)
+                }
             },
             FlowActionSheetContent.Action(
                 title: "Remove from Saved Shorts",
                 icon: .trash,
                 isDestructive: true
-            ) { [weak self] in
+            ) {
+                // The store deletes on its own queue and broadcasts "shorts" when the row is gone,
+                // so the grid reloads from that event rather than racing the write.
                 SavedShortsStore.shared.remove(videoId: short.videoId)
                 FlowSnackbar.show("Removed from Saved Shorts")
-                self?.reload()
             },
         ]
         LibraryMenu.present(from: self, title: short.title, actions: actions)
@@ -397,8 +402,8 @@ final class SavedShortCell: UICollectionViewCell {
 
             moreButton.trailingAnchor.constraint(equalTo: thumbnail.trailingAnchor, constant: -FlowSpacing.xxs),
             moreButton.topAnchor.constraint(equalTo: thumbnail.topAnchor, constant: FlowSpacing.xxs),
-            moreButton.widthAnchor.constraint(equalToConstant: 36.0),
-            moreButton.heightAnchor.constraint(equalToConstant: 36.0),
+            moreButton.widthAnchor.constraint(equalToConstant: 44.0),
+            moreButton.heightAnchor.constraint(equalToConstant: 44.0),
 
             titleLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             titleLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
@@ -428,8 +433,8 @@ final class SavedShortCell: UICollectionViewCell {
     /// Repaints the tile in the current palette.
     func applyTheme() {
         let scheme = FlowTheme.shared.scheme
+        thumbnail.placeholderColor = scheme.surfaceContainerHighest
         thumbnail.applyTheme()
-        thumbnail.backgroundColor = scheme.surfaceContainerHighest
         titleLabel.textColor = scheme.onSurface
         channelLabel.textColor = scheme.onSurfaceVariant
         playGlyph.iconColor = UIColor.white.withAlphaComponent(0.9)
@@ -600,12 +605,14 @@ final class ShortsPreviewView: UIView {
         player.play()
     }
 
-    /// Fades the preview out and releases its player.
+    /// Fades the preview out and releases its player. A preview that is shown again mid-fade
+    /// cancels the animation; the completion then leaves the new preview alone.
     func stop() {
         guard !isHidden else { return }
         FlowMotion.animate({
             self.alpha = 0.0
         }, completion: { _ in
+            guard self.alpha == 0.0 else { return }
             self.isHidden = true
             self.releasePlayer()
             self.still.clearImage()

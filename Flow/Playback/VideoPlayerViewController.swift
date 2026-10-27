@@ -559,9 +559,10 @@ final class VideoPlayerViewController: UIViewController {
     // MARK: - Sheets
 
     private func presentSettingsSheet() {
+        let rate = service.player.rate > 0 ? Double(service.player.rate) : PrefsStore.shared.playbackSpeed
         let content = PlayerSettingsSheet(
             quality: qualityLabel,
-            speed: Double(service.player.rate > 0 ? service.player.rate : PrefsStore.shared.playbackSpeed),
+            speed: rate,
             subtitlesOn: subtitleTrack != nil,
             sleepTimerActive: SleepTimer.shared.isActive,
             sponsorBlockOn: PrefsStore.shared.bool(for: .sponsorBlockEnabled, fallback: true),
@@ -607,7 +608,7 @@ final class VideoPlayerViewController: UIViewController {
 
     private func presentSpeedSheet() {
         let speeds: [Double] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
-        let current = Double(service.player.rate > 0 ? service.player.rate : PrefsStore.shared.playbackSpeed)
+        let current = service.player.rate > 0 ? Double(service.player.rate) : PrefsStore.shared.playbackSpeed
         let content = ChoiceSheetContent(
             options: speeds.map { speed in
                 ChoiceSheetContent.Option(

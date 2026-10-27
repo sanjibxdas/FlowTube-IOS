@@ -43,7 +43,7 @@ final class HomeViewModel {
     }
 
     /// What the screen draws when there are no rows yet.
-    enum State {
+    enum State: Equatable {
         case loading
         case loaded
         case empty
@@ -100,7 +100,7 @@ final class HomeViewModel {
     func loadIfNeeded() {
         guard !hasLoadedOnce else { return }
         hasLoadedOnce = true
-        if let snapshot = cache.load(), !snapshot.sections.isEmpty {
+        if let snapshot = cache.load(), !snapshot.feed.sections.isEmpty {
             feed = snapshot.feed
             continuation = snapshot.feed.continuation
             rebuildRows()

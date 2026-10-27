@@ -34,6 +34,7 @@ final class PrefsStore {
         case sponsorBlockAutoSkip = "sponsorBlock.autoSkip"
         case sponsorBlockCategories = "sponsorBlock.categories"
         case sponsorBlockShowOnSeekBar = "sponsorBlock.showOnSeekBar"
+        case sponsorBlockNotifyOnSkip = "sponsorBlock.notifyOnSkip"
         case deArrowEnabled = "deArrow.enabled"
         case deArrowTitles = "deArrow.titles"
         case deArrowThumbnails = "deArrow.thumbnails"
@@ -314,7 +315,8 @@ extension PrefsStore.Key {
             .equalizerPreset, .equalizerBands, .sleepTimerMinutes,
             .downloadQuality, .downloadWifiOnly, .downloadAudioOnly,
             .sponsorBlockEnabled, .sponsorBlockAutoSkip, .sponsorBlockCategories,
-            .sponsorBlockShowOnSeekBar, .deArrowEnabled, .deArrowTitles, .deArrowThumbnails,
+            .sponsorBlockShowOnSeekBar, .sponsorBlockNotifyOnSkip,
+            .deArrowEnabled, .deArrowTitles, .deArrowThumbnails,
             .returnYouTubeDislikeEnabled,
             .subtitlesEnabled, .subtitleLanguage, .subtitleFontScale, .subtitleTextColor,
             .subtitleBackgroundOpacity,

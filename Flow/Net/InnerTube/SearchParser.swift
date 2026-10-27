@@ -20,7 +20,7 @@ enum SearchParser {
         var estimated: Int64?
 
         let tabs = root["contents"]["tabbedSearchResultsRenderer"]["tabs"].array
-        let sectionList = tabs.first?["tabRenderer"]["content"]["sectionListRenderer"]
+        let sectionList = tabs.first?["tabRenderer"]["content"]["sectionListRenderer"] ?? .empty
         let contents = sectionList["contents"].array
 
         if let estimateText = sectionList["estimatedResults"].string {
@@ -221,7 +221,7 @@ enum SearchParser {
     /// One page of music search results.
     static func musicResults(from root: JSONNode) -> MusicSearchResults {
         let tabs = root["contents"]["tabbedSearchResultsRenderer"]["tabs"].array
-        let sectionList = tabs.first?["tabRenderer"]["content"]["sectionListRenderer"]
+        let sectionList = tabs.first?["tabRenderer"]["content"]["sectionListRenderer"] ?? .empty
         var items: [MusicItem] = []
         var continuation: String?
 

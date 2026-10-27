@@ -426,7 +426,9 @@ final class FlowTheme {
 
     /// Restores the persisted theme choice. Called once from `FlowApp.bootstrap()`.
     func restore(from prefs: PrefsStore) {
-        systemIsDark = UITraitCollection.current.userInterfaceStyle != .light
+        // `UITraitCollection.current` is iOS 13; the screen's traits carry the same interface
+        // style on iOS 12, and `restore` runs on the main thread before any window is shown.
+        systemIsDark = UIScreen.main.traitCollection.userInterfaceStyle != .light
         let storedMode = ThemeMode.fromStored(prefs.string(for: PrefsStore.Key.themeMode)) ?? .default
         let storedVariant = prefs.string(for: PrefsStore.Key.themeVariant).flatMap(ThemeVariant.init(rawValue:))
         mode = storedMode

@@ -1,0 +1,144 @@
+Flow/App/RootTabBarController.swift:120:26: error: cannot find 'MusicHomeViewController' in scope
+Flow/App/RootTabBarController.swift:122:26: error: cannot find 'SubscriptionsViewController' in scope
+Flow/Core/Storage/FlowDB.swift:198:23: error: cannot find 'queryRaw' in scope
+Flow/Core/Theme/FlowTheme.swift:429:42: error: 'current' is only available in iOS 13.0 or newer
+Flow/Core/UI/AsyncImageView.swift:155:35: error: missing argument for parameter 'frame' in call
+Flow/Core/UI/FlowCard.swift:290:48: error: missing argument for parameter 'frame' in call
+Flow/Core/UI/FlowCard.swift:297:45: error: missing argument for parameter 'frame' in call
+Flow/Core/UI/FlowCard.swift:326:38: error: cannot infer contextual base in reference to member 'scaleAspectFill'
+Flow/Core/UI/FlowCard.swift:356:35: error: cannot infer contextual base in reference to member 'scaleAspectFill'
+Flow/Core/UI/FlowCard.swift:377:21: error: cannot infer contextual base in reference to member 'horizontal'
+Flow/Core/UI/FlowCard.swift:379:26: error: cannot infer contextual base in reference to member 'top'
+Flow/Core/UI/FlowIcon.swift:733:23: error: assigning a property to itself
+Flow/Core/UI/FlowInsetGroupedTable.swift:252:29: error: 'nil' cannot be assigned to type 'FlowIcon'
+Flow/Core/UI/FlowShimmer.swift:129:38: error: no exact matches in call to instance method 'constraint'
+Flow/Core/UI/FlowShimmer.swift:133:41: error: no exact matches in call to instance method 'constraint'
+Flow/Features/Channel/ChannelViewController.swift:488:45: error: missing argument for parameter 'frame' in call
+Flow/Features/Channel/ChannelViewController.swift:489:45: error: missing argument for parameter 'frame' in call
+Flow/Features/Channel/ChannelViewController.swift:516:35: error: cannot infer contextual base in reference to member 'scaleAspectFill'
+Flow/Features/Channel/ChannelViewController.swift:522:35: error: cannot infer contextual base in reference to member 'scaleAspectFill'
+Flow/Features/Channel/ChannelViewController.swift:631:48: error: missing argument for parameter 'frame' in call
+Flow/Features/Channel/ChannelViewController.swift:650:38: error: cannot infer contextual base in reference to member 'scaleAspectFill'
+Flow/Features/Channel/ChannelViewController.swift:775:44: error: missing argument for parameter 'frame' in call
+Flow/Features/Channel/ChannelViewController.swift:793:34: error: cannot infer contextual base in reference to member 'scaleAspectFill'
+Flow/Features/Home/HomeRows.swift:101:38: error: cannot infer contextual base in reference to member 'scaleAspectFill'
+Flow/Features/Home/HomeRows.swift:274:48: error: missing argument for parameter 'frame' in call
+Flow/Features/Home/HomeRows.swift:296:38: error: cannot infer contextual base in reference to member 'scaleAspectFill'
+Flow/Features/Home/HomeRows.swift:79:48: error: missing argument for parameter 'frame' in call
+Flow/Features/Home/HomeViewController.swift:207:58: error: referencing operator function '!=' on 'BinaryInteger' requires that 'HomeViewModel.State' conform to 'BinaryInteger'
+Flow/Features/Home/HomeViewModel.swift:103:51: error: value of type 'HomeFeedCache.Cached' has no member 'sections'
+Flow/Features/Home/HomeViewModel.swift:256:36: error: binary operator '==' cannot be applied to two 'HomeViewModel.State' operands
+Flow/Features/Library/DownloadsViewController.swift:109:75: error: cannot infer contextual base in reference to member 'touchUpInside'
+Flow/Features/Library/DownloadsViewController.swift:114:27: error: cannot infer contextual base in reference to member 'horizontal'
+Flow/Features/Library/DownloadsViewController.swift:116:32: error: cannot infer contextual base in reference to member 'center'
+Flow/Features/Library/DownloadsViewController.swift:120:24: error: cannot infer contextual base in reference to member 'vertical'
+Flow/Features/Library/DownloadsViewController.swift:408:23: error: cannot find 'numberOfRows' in scope
+Flow/Features/Library/DownloadsViewController.swift:48:105: error: 'nil' is not compatible with expected argument type 'Selector'
+Flow/Features/Library/DownloadsViewController.swift:755:109: error: 'nil' is not compatible with expected argument type 'Selector'
+Flow/Features/Library/DownloadsViewController.swift:756:108: error: 'nil' is not compatible with expected argument type 'Selector'
+Flow/Features/Library/DownloadsViewController.swift:818:79: error: cannot infer contextual base in reference to member 'touchUpInside'
+Flow/Features/Library/DownloadsViewController.swift:819:77: error: cannot infer contextual base in reference to member 'touchUpInside'
+Flow/Features/Library/DownloadsViewController.swift:899:36: error: cannot infer contextual base in reference to member 'downloaded'
+Flow/Features/Library/DownloadsViewController.swift:903:36: error: cannot infer contextual base in reference to member 'play'
+Flow/Features/Library/DownloadsViewController.swift:908:36: error: cannot infer contextual base in reference to member 'sync'
+Flow/Features/Library/DownloadsViewController.swift:913:36: error: cannot infer contextual base in reference to member 'pause'
+Flow/Features/Library/DownloadsViewController.swift:918:36: error: cannot infer contextual base in reference to member 'sync'
+Flow/Features/Library/HistoryViewController.swift:119:74: error: cannot infer contextual base in reference to member 'touchUpInside'
+Flow/Features/Library/HistoryViewController.swift:124:27: error: cannot infer contextual base in reference to member 'horizontal'
+Flow/Features/Library/HistoryViewController.swift:126:32: error: cannot infer contextual base in reference to member 'center'
+Flow/Features/Library/HistoryViewController.swift:68:105: error: 'nil' is not compatible with expected argument type 'Selector'
+Flow/Features/Library/LocalMediaViewController.swift:1017:105: error: 'nil' is not compatible with expected argument type 'Selector'
+Flow/Features/Library/LocalMediaViewController.swift:1062:73: error: cannot infer contextual base in reference to member 'touchUpInside'
+Flow/Features/Library/LocalMediaViewController.swift:1344:107: error: 'nil' is not compatible with expected argument type 'Selector'
+Flow/Features/Library/LocalMediaViewController.swift:1345:106: error: 'nil' is not compatible with expected argument type 'Selector'
+Flow/Features/Library/LocalMediaViewController.swift:1394:69: error: cannot infer contextual base in reference to member 'touchUpInside'
+Flow/Features/Library/LocalMediaViewController.swift:1399:77: error: cannot infer contextual base in reference to member 'touchUpInside'
+Flow/Features/Library/LocalMediaViewController.swift:1416:60: error: cannot infer contextual base in reference to member 'pause'
+Flow/Features/Library/LocalMediaViewController.swift:309:106: error: 'nil' is not compatible with expected argument type 'Selector'
+Flow/Features/Library/LocalMediaViewController.swift:397:80: error: cannot infer contextual base in reference to member 'touchUpInside'
+Flow/Features/Library/LocalMediaViewController.swift:427:27: error: cannot infer contextual base in reference to member 'horizontal'
+Flow/Features/Library/LocalMediaViewController.swift:429:32: error: cannot infer contextual base in reference to member 'center'
+Flow/Features/Library/LocalMediaViewController.swift:433:24: error: cannot infer contextual base in reference to member 'vertical'
+Flow/Features/Library/PlaylistsViewController.swift:138:22: error: value of type 'PlaylistsViewController' has no member 'presentOrderMenu'
+Flow/Features/Library/PlaylistsViewController.swift:145:76: error: cannot infer contextual base in reference to member 'touchUpInside'
+Flow/Features/Library/PlaylistsViewController.swift:54:103: error: 'nil' is not compatible with expected argument type 'Selector'
+Flow/Features/Library/PlaylistsViewController.swift:593:105: error: 'nil' is not compatible with expected argument type 'Selector'
+Flow/Features/Library/PlaylistsViewController.swift:636:73: error: cannot infer contextual base in reference to member 'touchUpInside'
+Flow/Features/Notes/NotesViewController.swift:693:105: error: 'nil' is not compatible with expected argument type 'Selector'
+Flow/Features/Notes/NotesViewController.swift:694:108: error: 'nil' is not compatible with expected argument type 'Selector'
+Flow/Features/Notes/NotesViewController.swift:695:103: error: 'nil' is not compatible with expected argument type 'Selector'
+Flow/Features/Notes/NotesViewController.swift:773:73: error: cannot infer contextual base in reference to member 'touchUpInside'
+Flow/Features/Notes/NotesViewController.swift:778:81: error: cannot infer contextual base in reference to member 'touchUpInside'
+Flow/Features/Notes/NotesViewController.swift:783:71: error: cannot infer contextual base in reference to member 'touchUpInside'
+Flow/Features/Notes/NotesViewController.swift:987:31: error: cannot infer contextual base in reference to member 'close'
+Flow/Features/Notes/NotesViewController.swift:997:31: error: cannot infer contextual base in reference to member 'check'
+Flow/Features/Onboarding/OnboardingViewController.swift:1195:35: error: cannot find 'FlowBackupArchive' in scope
+Flow/Features/Onboarding/OnboardingViewController.swift:1217:35: error: cannot find 'NewPipeSubscriptionCodec' in scope
+Flow/Features/Onboarding/OnboardingViewController.swift:125:30: error: 'UIViewNoIntrinsicMetric' has been renamed to 'UIView.noIntrinsicMetric'
+Flow/Features/Playlist/PlaylistViewController.swift:632:46: error: missing argument for parameter 'frame' in call
+Flow/Features/Playlist/PlaylistViewController.swift:669:36: error: cannot infer contextual base in reference to member 'scaleAspectFill'
+Flow/Features/Playlist/PlaylistViewController.swift:851:48: error: missing argument for parameter 'frame' in call
+Flow/Features/Playlist/PlaylistViewController.swift:878:38: error: cannot infer contextual base in reference to member 'scaleAspectFill'
+Flow/Features/Search/SearchResultsController.swift:614:48: error: missing argument for parameter 'frame' in call
+Flow/Features/Search/SearchResultsController.swift:633:38: error: cannot infer contextual base in reference to member 'scaleAspectFill'
+Flow/Features/Search/SearchResultsController.swift:783:45: error: missing argument for parameter 'frame' in call
+Flow/Features/Search/SearchResultsController.swift:805:35: error: cannot infer contextual base in reference to member 'scaleAspectFill'
+Flow/Features/Search/SearchResultsController.swift:945:44: error: missing argument for parameter 'frame' in call
+Flow/Features/Search/SearchResultsController.swift:968:34: error: cannot infer contextual base in reference to member 'scaleAspectFill'
+Flow/Features/Settings/PlaybackSettingsViewController.swift:137:74: error: conflicting arguments to generic parameter 'Self' ('Bool' vs. 'Double')
+Flow/Features/Settings/SettingsViewController.swift:448:14: error: value of type 'SettingsSwitchCell' has no member 'isEnabled'
+Flow/Features/Settings/SettingsViewController.swift:457:29: error: 'nil' cannot be assigned to type 'FlowIcon'
+Flow/Features/Settings/SettingsViewController.swift:472:32: error: cannot find 'isEnabled' in scope
+Flow/Features/Settings/SettingsViewController.swift:482:25: error: 'nil' cannot be assigned to type 'FlowIcon'
+Flow/Features/Settings/SettingsViewController.swift:488:9: error: cannot find 'isEnabled' in scope
+Flow/Features/Settings/SettingsViewController.swift:806:23: error: cannot find 'DownloadSettingsViewController' in scope
+Flow/Features/Settings/SettingsViewController.swift:817:44: error: cannot find 'DownloadSettingsViewController' in scope
+Flow/Features/Settings/SettingsViewController.swift:827:44: error: cannot find 'StorageSettingsViewController' in scope
+Flow/Features/Settings/SettingsViewController.swift:856:44: error: cannot find 'SponsorBlockSettingsViewController' in scope
+Flow/Features/Settings/SettingsViewController.swift:894:44: error: cannot find 'SubtitleSettingsViewController' in scope
+Flow/Features/Settings/SettingsViewController.swift:921:44: error: cannot find 'PrivacySettingsViewController' in scope
+Flow/Features/Settings/SettingsViewController.swift:950:44: error: cannot find 'StorageSettingsViewController' in scope
+Flow/Features/Settings/SettingsViewController.swift:969:44: error: cannot find 'AboutViewController' in scope
+Flow/Features/Watch/CommentsViewController.swift:524:45: error: missing argument for parameter 'frame' in call
+Flow/Features/Watch/CommentsViewController.swift:531:17: error: cannot override with a stored property 'textLabel'
+Flow/Features/Watch/CommentsViewController.swift:531:17: error: overriding property must be as accessible as its enclosing type
+Flow/Features/Watch/CommentsViewController.swift:557:35: error: cannot infer contextual base in reference to member 'scaleAspectFill'
+Flow/Features/Watch/WatchViewController.swift:1089:45: error: missing argument for parameter 'frame' in call
+Flow/Features/Watch/WatchViewController.swift:1110:35: error: cannot infer contextual base in reference to member 'scaleAspectFill'
+Flow/Features/Watch/WatchViewController.swift:1419:17: error: cannot override with a stored property 'textLabel'
+Flow/Features/Watch/WatchViewController.swift:1419:17: error: overriding property must be as accessible as its enclosing type
+Flow/Features/Watch/WatchViewController.swift:1767:48: error: missing argument for parameter 'frame' in call
+Flow/Features/Watch/WatchViewController.swift:1788:38: error: cannot infer contextual base in reference to member 'scaleAspectFill'
+Flow/Net/InnerTube/BrowseParser.swift:479:24: error: initializer for conditional binding must have Optional type, not 'JSONNode'
+Flow/Net/InnerTube/BrowseParser.swift:615:21: error: value of optional type 'JSONNode?' must be unwrapped to refer to member 'subscript' of wrapped base type 'JSONNode'
+Flow/Net/InnerTube/BrowseParser.swift:672:64: error: value of optional type 'JSONNode?' must be unwrapped to refer to member 'subscript' of wrapped base type 'JSONNode'
+Flow/Net/InnerTube/InnerTubeClient.swift:577:59: error: cannot convert value of type '(Result<Data, FlowError>) -> Void' to expected argument type '(Result<InnerTubeClient.Payload, FlowError>) -> Void'
+Flow/Net/InnerTube/InnerTubeContext.swift:351:9: error: argument 'packageName' must precede argument 'friendlyName'
+Flow/Net/InnerTube/NextParser.swift:353:24: error: value of optional type 'JSONNode?' must be unwrapped to refer to member 'subscript' of wrapped base type 'JSONNode'
+Flow/Net/InnerTube/NextParser.swift:39:39: error: value of optional type 'JSONNode?' must be unwrapped to a value of type 'JSONNode'
+Flow/Net/InnerTube/SearchParser.swift:228:21: error: value of optional type 'JSONNode?' must be unwrapped to refer to member 'subscript' of wrapped base type 'JSONNode'
+Flow/Net/InnerTube/SearchParser.swift:24:24: error: value of optional type 'JSONNode?' must be unwrapped to refer to member 'subscript' of wrapped base type 'JSONNode'
+Flow/Net/InnerTube/SearchParser.swift:26:31: error: value of optional type 'JSONNode?' must be unwrapped to refer to member 'subscript' of wrapped base type 'JSONNode'
+Flow/Playback/AudioEngine.swift:285:13: error: cannot convert value of type 'UnsafeMutablePointer<MTAudioProcessingTap?>' to expected argument type 'UnsafeMutablePointer<Unmanaged<MTAudioProcessingTap>?>'
+Flow/Playback/AudioEngine.swift:317:15: error: initializer for conditional binding must have Optional type, not 'UnsafeMutableRawPointer'
+Flow/Playback/AudioEngine.swift:322:15: error: initializer for conditional binding must have Optional type, not 'UnsafeMutableRawPointer'
+Flow/Playback/AudioEngine.swift:335:15: error: initializer for conditional binding must have Optional type, not 'UnsafeMutableRawPointer'
+Flow/Playback/AudioEngine.swift:341:15: error: initializer for conditional binding must have Optional type, not 'UnsafeMutableRawPointer'
+Flow/Playback/AudioEngine.swift:462:32: error: cannot convert value of type 'EqFilterType' to expected argument type 'BiquadFilter.Kind'
+Flow/Playback/LyricsViewController.swift:230:17: error: cannot override mutable property 'title' of type 'String?' with covariant type 'String'
+Flow/Playback/LyricsViewController.swift:230:17: error: overriding property must be as accessible as its enclosing type
+Flow/Playback/MiniPlayerView.swift:302:44: error: missing argument for parameter 'frame' in call
+Flow/Playback/MiniPlayerView.swift:322:34: error: cannot infer contextual base in reference to member 'scaleAspectFill'
+Flow/Playback/MusicPlayerViewController.swift:1082:48: error: cannot infer contextual base in reference to member 'identity'
+Flow/Playback/MusicPlayerViewController.swift:984:47: error: missing argument for parameter 'frame' in call
+Flow/Playback/MusicPlayerViewController.swift:985:44: error: missing argument for parameter 'frame' in call
+Flow/Playback/MusicPlayerViewController.swift:986:48: error: missing argument for parameter 'frame' in call
+Flow/Playback/PlayerItemFactory.swift:156:25: error: 'value(forHTTPHeaderField:)' is only available in iOS 13.0 or newer
+Flow/Playback/PlayerItemFactory.swift:157:38: error: 'value(forHTTPHeaderField:)' is only available in iOS 13.0 or newer
+Flow/Playback/PlayerItemFactory.swift:434:65: error: cannot convert value of type 'AutoreleasingUnsafeMutablePointer<AVKeyValueStatus>' to expected argument type 'AutoreleasingUnsafeMutablePointer<NSError?>'
+Flow/Playback/QueueSheetViewController.swift:245:42: error: missing argument for parameter 'frame' in call
+Flow/Playback/QueueSheetViewController.swift:268:32: error: cannot infer contextual base in reference to member 'scaleAspectFill'
+Flow/Playback/VideoPlayerViewController.swift:564:27: error: missing argument label 'from:' in call
+Flow/Playback/VideoPlayerViewController.swift:570:42: error: cannot infer type of closure parameter 'row' without a type annotation
+Flow/Playback/VideoPlayerViewController.swift:610:30: error: missing argument label 'from:' in call
+Flow/Playback/VideoPlayerViewController.swift:620:42: error: cannot infer type of closure parameter 'index' without a type annotation

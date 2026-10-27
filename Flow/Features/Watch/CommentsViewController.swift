@@ -5,8 +5,9 @@ import UIKit
 /// The list is the Android `FlowCommentsList` ported to a plain `UITableView`: a 40-point avatar,
 /// the author with YouTube's `@` prefix, the relative time, the comment body, the like count and,
 /// for a top-level comment, a control that loads and reveals its replies. Replies are fetched with
-/// the comment's own continuation and are indented under their parent, exactly as the Compose list
-/// draws them.
+/// the comment's own continuation, drawn smaller than a comment and joined to the branch above by
+/// a gutter line, exactly as the Compose list draws them. A reply that opens with an `@handle` is
+/// nested under whoever that handle belongs to, because YouTube stores replies flat.
 ///
 /// Ordering is client-side. YouTube serves one order per continuation and the app has no account,
 /// so the initial continuation is the "Top" order; "Newest" and "Oldest" re-order the pages that
@@ -70,14 +71,18 @@ final class CommentsViewController: UIViewController {
         let parentId: String
     }
 
+    /// A reply and whatever replied to it, at the depth it sits in the conversation.
+    private struct ReplyNode {
+        let comment: Comment
+        let children: [ReplyNode]
+    }
+
     private var comments: [Comment] = []
     private var rows: [Row] = []
     private var continuation: String?
-    private var totalText: String?
     private var sort: Sort = .top
     private var isLoading = false
     private var isLoadingMore = false
-    private var hasLoaded = false
 
     /// Comments whose body is shown in full.
     private var expandedText: Set<String> = []
@@ -191,16 +196,19 @@ final class CommentsViewController: UIViewController {
         view.addSubview(spinner)
         NSLayoutConstraint.activate([
             spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            spinner.centerYAnchor.constraint(equalTo: tableView.centerYAnchor),
         ])
 
+        // The states fill the list's area rather than the whole screen, so the sort chips stay
+        // usable while a page shows "No comments yet" or an error.
         for state in [emptyState, errorState] {
             state.isHidden = true
             view.addSubviewForAutoLayout(state)
             NSLayoutConstraint.activate([
                 state.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                 state.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                state.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+                state.topAnchor.constraint(equalTo: separator.bottomAnchor),
+                state.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             ])
         }
         errorState.onAction = { [weak self] in
@@ -226,24 +234,25 @@ final class CommentsViewController: UIViewController {
     private func loadFirstPage() {
         guard !isLoading else { return }
         isLoading = true
-        hasLoaded = false
         errorState.isHidden = true
         emptyState.isHidden = true
         tableView.isHidden = false
         spinner.startAnimating()
+        // A retry starts from the first page again, not from whatever the failure left behind.
+        continuation = nil
 
         api.comments(videoId: videoId, continuation: initialContinuation) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.isLoading = false
                 self.spinner.stopAnimating()
-                self.hasLoaded = true
                 switch result {
                 case .success(let page):
                     self.comments = page.comments
                     self.continuation = page.continuation
+                    // The header count is YouTube's own wording ("1.2K"), so the title carries it
+                    // verbatim rather than reformatting a figure the page already formatted.
                     if let total = page.totalText, !total.trimmed.isEmpty {
-                        self.totalText = total
                         self.title = "Comments · " + total
                     }
                     self.rebuildRows()
@@ -321,6 +330,9 @@ final class CommentsViewController: UIViewController {
     }
 
     private func showError(_ error: FlowError) {
+        // A failed first page leaves nothing to page through, so the token is dropped rather than
+        // letting a later scroll ask for the second page of a list that never loaded.
+        continuation = nil
         tableView.isHidden = true
         emptyState.isHidden = true
         errorState.isHidden = false
@@ -352,9 +364,7 @@ final class CommentsViewController: UIViewController {
         for comment in sortedComments() {
             built.append(Row(kind: .comment, comment: comment, depth: 0, parentId: comment.id))
             guard expandedReplies.contains(comment.id) else { continue }
-            for reply in comment.replies {
-                built.append(Row(kind: .reply, comment: reply, depth: 1, parentId: comment.id))
-            }
+            appendReplies(replyTree(comment.replies), parentId: comment.id, depth: 1, into: &built)
             if replyContinuations[comment.id] != nil {
                 built.append(Row(kind: .moreReplies, comment: nil, depth: 1, parentId: comment.id))
             }
@@ -363,23 +373,94 @@ final class CommentsViewController: UIViewController {
         tableView.reloadData()
     }
 
+    private func appendReplies(_ nodes: [ReplyNode], parentId: String, depth: Int, into rows: inout [Row]) {
+        for node in nodes {
+            rows.append(Row(kind: .reply, comment: node.comment, depth: depth, parentId: parentId))
+            appendReplies(node.children, parentId: parentId, depth: depth + 1, into: &rows)
+        }
+    }
+
+    /// Arranges a flat reply list into the conversation it actually is.
+    ///
+    /// YouTube stores one level of replies: a reply to a reply comes back in the same list, marked
+    /// only by the `@handle` it opens with. Reading that mention back is what lets the thread show
+    /// who was answering whom instead of a single column of equals. A mention only nests a reply
+    /// under someone who spoke *earlier* in the thread, so a mention of the top-level author, of a
+    /// stranger, or of someone further down leaves the reply where it is.
+    private func replyTree(_ replies: [Comment]) -> [ReplyNode] {
+        guard replies.count > 1 else { return replies.map { ReplyNode(comment: $0, children: []) } }
+
+        var children: [String: [Comment]] = [:]
+        var roots: [Comment] = []
+        var seenAuthors: [String: String] = [:]
+
+        for reply in replies {
+            let handle = CommentsViewController.handle(reply.author)
+            let mention = CommentsViewController.leadingMention(in: reply.text)
+            // Answering yourself is a continuation, not a branch, so it stays where it is.
+            if let mention = mention, mention != handle, let parentId = seenAuthors[mention] {
+                children[parentId, default: []].append(reply)
+            } else {
+                roots.append(reply)
+            }
+            if seenAuthors[handle] == nil {
+                seenAuthors[handle] = reply.id
+            }
+        }
+
+        func node(_ comment: Comment) -> ReplyNode {
+            return ReplyNode(
+                comment: comment,
+                children: (children[comment.id] ?? []).map(node)
+            )
+        }
+        return roots.map(node)
+    }
+
     /// Pinned comments stay on top in every order, which is what YouTube itself does.
+    ///
+    /// Every comparator falls back to the other order's key and then to the id, so the list does
+    /// not reshuffle between reloads of the same page: `sorted(by:)` is not stable.
     private func sortedComments() -> [Comment] {
         let pinned = comments.filter { $0.isPinned }
         let rest = comments.filter { !$0.isPinned }
         let ordered: [Comment]
         switch sort {
         case .top:
-            ordered = rest.sorted { $0.likeCount > $1.likeCount }
+            ordered = rest.sorted { left, right in
+                if left.likeCount != right.likeCount { return left.likeCount > right.likeCount }
+                return CommentsViewController.isOlder(left, right)
+            }
         case .newest:
-            ordered = rest.sorted { CommentsViewController.relativeSeconds($0.publishedTime) < CommentsViewController.relativeSeconds($1.publishedTime) }
+            ordered = rest.sorted { left, right in
+                let leftAge = CommentsViewController.relativeSeconds(left.publishedTime)
+                let rightAge = CommentsViewController.relativeSeconds(right.publishedTime)
+                // An age the page did not print sorts last rather than first, in both directions.
+                if leftAge != rightAge { return leftAge < rightAge }
+                return CommentsViewController.isOlder(left, right)
+            }
         case .oldest:
-            ordered = rest.sorted { CommentsViewController.relativeSeconds($0.publishedTime) > CommentsViewController.relativeSeconds($1.publishedTime) }
+            ordered = rest.sorted { left, right in
+                let leftAge = CommentsViewController.relativeSeconds(left.publishedTime)
+                let rightAge = CommentsViewController.relativeSeconds(right.publishedTime)
+                if leftAge != rightAge { return leftAge > rightAge }
+                return CommentsViewController.isOlder(left, right)
+            }
         }
         return pinned + ordered
     }
 
+    private static func isOlder(_ left: Comment, _ right: Comment) -> Bool {
+        let leftAge = relativeSeconds(left.publishedTime)
+        let rightAge = relativeSeconds(right.publishedTime)
+        if leftAge != rightAge { return leftAge > rightAge }
+        return left.id < right.id
+    }
+
     /// Turns YouTube's "3 weeks ago" into seconds, so the three orders share one comparator.
+    ///
+    /// A page can print a date instead of a relative time ("14 Mar 2019"), which has no age to
+    /// read here; that sorts as the oldest thing on the page rather than as brand new.
     private static func relativeSeconds(_ text: String) -> TimeInterval {
         let lower = text.lowercased().trimmed
         let digits = lower.components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
@@ -458,7 +539,7 @@ extension CommentsViewController: UITableViewDataSource, UITableViewDelegate {
         switch row.kind {
         case .moreReplies:
             let cell = tableView.dequeueReusableCell(withIdentifier: CommentsMoreCell.reuseIdentifier, for: indexPath) as! CommentsMoreCell
-            cell.configure(isLoading: loadingReplies.contains(row.parentId))
+            cell.configure(isLoading: loadingReplies.contains(row.parentId), depth: row.depth)
             cell.onTap = { [weak self] in
                 self?.loadReplies(for: row.parentId)
             }
@@ -488,6 +569,9 @@ extension CommentsViewController: UITableViewDataSource, UITableViewDelegate {
             cell.onOpenChannel = { [weak self] in
                 guard !comment.authorChannelId.isEmpty else { return }
                 self?.onOpenChannel?(comment.authorChannelId)
+            }
+            cell.onSeek = { [weak self] seconds in
+                self?.onSeek?(seconds)
             }
             cell.applyTheme()
             return cell
@@ -520,24 +604,38 @@ final class CommentCell: UITableViewCell {
     var onToggleReplies: (() -> Void)?
     /// Called when the avatar or author is tapped.
     var onOpenChannel: (() -> Void)?
+    /// Called with a timestamp when the comment's "Jump to" control is tapped.
+    var onSeek: ((TimeInterval) -> Void)?
 
-    private let avatarView = AsyncImageView()
+    private let avatarView = AsyncImageView(frame: .zero)
+    /// The line that runs down a reply's gutter, joining it to the comment it answers.
+    private let threadLine = UIView()
     private let pinnedRow = UIStackView()
+    /// The icon set has no pin glyph, so the pinned banner borrows the chapter marker — the same
+    /// small mark Android puts beside a section's label.
     private let pinnedIcon = FlowIconView()
     private let pinnedLabel = UILabel()
-    private let authorLabel = UILabel()
+    private let authorLabel = PaddedLabel()
     private let verifiedIcon = FlowIconView()
     private let timeLabel = UILabel()
-    private let textLabel = UILabel()
+    private let bodyLabel = UILabel()
     private let likeIcon = FlowIconView()
     private let likeLabel = UILabel()
     private let heartedIcon = FlowIconView()
+    private let timestampButton = UIButton(type: .system)
     private let repliesButton = UIButton(type: .system)
     private let stack = UIStackView()
     private let authorRow = UIStackView()
     private let actionRow = UIStackView()
 
     private var avatarLeading: NSLayoutConstraint!
+    private var threadLineLeading: NSLayoutConstraint!
+    private var avatarWidth: NSLayoutConstraint!
+    private var avatarHeight: NSLayoutConstraint!
+    /// The timestamp the comment mentions, when it mentions one.
+    private var timestamp: TimeInterval?
+    /// Whether the comment was written by the video's creator, so the name keeps its chip.
+    private var isCreatorComment = false
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -554,9 +652,15 @@ final class CommentCell: UITableViewCell {
         backgroundColor = .clear
         contentView.backgroundColor = .clear
 
+        // The line that joins a reply to the comment above it, drawn in the gutter to the left of
+        // the reply's avatar. Hidden on a top-level comment, which has nothing above it to join.
+        threadLine.translatesAutoresizingMaskIntoConstraints = false
+        threadLine.isHidden = true
+        contentView.addSubview(threadLine)
+
         avatarView.contentMode = .scaleAspectFill
         avatarView.clipsToBounds = true
-        avatarView.applyCornerRadius(18.0)
+        avatarView.applyCornerRadius(20.0)
         avatarView.isUserInteractionEnabled = true
         avatarView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleAuthorTap)))
         contentView.addSubviewForAutoLayout(avatarView)
@@ -576,9 +680,12 @@ final class CommentCell: UITableViewCell {
         pinnedRow.addArrangedSubview(pinnedIcon)
         pinnedRow.addArrangedSubview(pinnedLabel)
 
-        authorLabel.font = FlowTypography.titleSmallEmphasized
+        // Android sets the author in the primary colour, and gives the video's own creator a
+        // secondary-container chip instead — the two are the only thing that tells them apart.
+        authorLabel.font = FlowTypography.labelMediumEmphasized
         authorLabel.numberOfLines = 1
         authorLabel.lineBreakMode = .byTruncatingTail
+        authorLabel.layer.masksToBounds = true
         authorLabel.isUserInteractionEnabled = true
         authorLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleAuthorTap)))
 
@@ -604,13 +711,15 @@ final class CommentCell: UITableViewCell {
         authorRow.addArrangedSubview(timeLabel)
         authorRow.addArrangedSubview(authorSpacer)
 
-        textLabel.font = FlowTypography.bodyMedium
-        textLabel.numberOfLines = 4
-        textLabel.lineBreakMode = .byTruncatingTail
-        textLabel.isUserInteractionEnabled = true
-        textLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTextTap)))
+        bodyLabel.font = FlowTypography.bodyMedium
+        bodyLabel.numberOfLines = 4
+        bodyLabel.lineBreakMode = .byTruncatingTail
+        bodyLabel.isUserInteractionEnabled = true
+        bodyLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTextTap)))
 
-        likeIcon.icon = .liked
+        // The outline heart stands in for Android's outlined thumbs-up: the icon set has no
+        // thumb, and a filled heart is already spoken for by the creator's heart below.
+        likeIcon.icon = .heart
         likeIcon.iconSize = 14.0
         likeIcon.translatesAutoresizingMaskIntoConstraints = false
         likeIcon.widthAnchor.constraint(equalToConstant: 14.0).isActive = true
@@ -619,7 +728,8 @@ final class CommentCell: UITableViewCell {
         likeLabel.font = FlowTypography.labelMedium
         likeLabel.numberOfLines = 1
 
-        heartedIcon.icon = .heart
+        // The creator's heart is YouTube's red filled heart, so it uses the filled glyph.
+        heartedIcon.icon = .liked
         heartedIcon.iconSize = 14.0
         heartedIcon.translatesAutoresizingMaskIntoConstraints = false
         heartedIcon.widthAnchor.constraint(equalToConstant: 14.0).isActive = true
@@ -628,6 +738,11 @@ final class CommentCell: UITableViewCell {
         let actionSpacer = UIView()
         actionSpacer.translatesAutoresizingMaskIntoConstraints = false
         actionSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        timestampButton.titleLabel?.font = FlowTypography.labelMediumEmphasized
+        timestampButton.contentHorizontalAlignment = .left
+        timestampButton.isHidden = true
+        timestampButton.addTarget(self, action: #selector(handleTimestampTap), for: .touchUpInside)
 
         repliesButton.titleLabel?.font = FlowTypography.labelLargeEmphasized
         repliesButton.contentHorizontalAlignment = .left
@@ -639,6 +754,7 @@ final class CommentCell: UITableViewCell {
         actionRow.addArrangedSubview(likeIcon)
         actionRow.addArrangedSubview(likeLabel)
         actionRow.addArrangedSubview(heartedIcon)
+        actionRow.addArrangedSubview(timestampButton)
         actionRow.addArrangedSubview(actionSpacer)
         actionRow.addArrangedSubview(repliesButton)
 
@@ -647,16 +763,24 @@ final class CommentCell: UITableViewCell {
         stack.alignment = .fill
         stack.addArrangedSubview(pinnedRow)
         stack.addArrangedSubview(authorRow)
-        stack.addArrangedSubview(textLabel)
+        stack.addArrangedSubview(bodyLabel)
         stack.addArrangedSubview(actionRow)
         contentView.addSubviewForAutoLayout(stack)
 
         avatarLeading = avatarView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: FlowSpacing.xl)
+        avatarWidth = avatarView.widthAnchor.constraint(equalToConstant: 40.0)
+        avatarHeight = avatarView.heightAnchor.constraint(equalToConstant: 40.0)
+        threadLineLeading = threadLine.leadingAnchor.constraint(equalTo: contentView.leadingAnchor)
         NSLayoutConstraint.activate([
             avatarLeading,
             avatarView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: FlowSpacing.lg),
-            avatarView.widthAnchor.constraint(equalToConstant: 36.0),
-            avatarView.heightAnchor.constraint(equalToConstant: 36.0),
+            avatarWidth,
+            avatarHeight,
+
+            threadLineLeading,
+            threadLine.widthAnchor.constraint(equalToConstant: 2.0),
+            threadLine.topAnchor.constraint(equalTo: contentView.topAnchor),
+            threadLine.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
 
             stack.leadingAnchor.constraint(equalTo: avatarView.trailingAnchor, constant: FlowSpacing.lg),
             stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -FlowSpacing.xl),
@@ -667,6 +791,10 @@ final class CommentCell: UITableViewCell {
     }
 
     /// Fills the cell from a comment.
+    ///
+    /// A reply is drawn smaller than a top-level comment — a 24-point avatar, body-small text and
+    /// no reply control of its own — which is how Android tells the two apart. `depth` indents a
+    /// reply under the reply it answers, and the gutter line joins it to the branch above.
     func configure(
         comment: Comment,
         depth: Int,
@@ -676,20 +804,39 @@ final class CommentCell: UITableViewCell {
         hasMoreReplies: Bool,
         isLoadingReplies: Bool
     ) {
-        avatarLeading.constant = FlowSpacing.xl + CGFloat(depth) * 28.0
+        let indent = CGFloat(max(depth, 0)) * 28.0
+        avatarLeading.constant = FlowSpacing.xl + indent
+        avatarWidth.constant = isReply ? 24.0 : 40.0
+        avatarHeight.constant = isReply ? 24.0 : 40.0
+        avatarView.applyCornerRadius((isReply ? 24.0 : 40.0) / 2.0)
         avatarView.setImage(url: comment.authorThumbnail)
-        avatarView.isHidden = isReply && comment.authorThumbnail.isEmpty
+        avatarView.isHidden = false
+
+        // The line drops from the centre of the avatar it answers: a 40-point avatar on a
+        // top-level comment, a 24-point one on another reply.
+        threadLine.isHidden = !isReply
+        let parentCentre = depth <= 1
+            ? FlowSpacing.xl + 20.0
+            : FlowSpacing.xl + CGFloat(depth - 1) * 28.0 + 12.0
+        threadLineLeading.constant = parentCentre - 1.0
 
         pinnedRow.isHidden = !comment.isPinned
         pinnedLabel.text = "Pinned by creator"
 
         authorLabel.text = CommentsViewController.displayAuthor(comment.author)
-        verifiedIcon.isHidden = !comment.isVerified
+        isCreatorComment = comment.isCreator
+        // Only the creator's name is a chip, so only it carries the padding that makes one.
+        authorLabel.textInsets = comment.isCreator
+            ? UIEdgeInsets(top: 2, left: 8, bottom: 2, right: 8)
+            : .zero
+        authorLabel.layer.cornerRadius = comment.isCreator ? 10.0 : 0.0
+        verifiedIcon.isHidden = !(comment.isVerified || comment.isCreator)
         timeLabel.text = comment.publishedTime
 
-        textLabel.text = comment.text
-        textLabel.numberOfLines = textExpanded ? 0 : 4
-        textLabel.lineBreakMode = textExpanded ? .byWordWrapping : .byTruncatingTail
+        bodyLabel.font = isReply ? FlowTypography.bodySmall : FlowTypography.bodyMedium
+        bodyLabel.text = comment.text
+        bodyLabel.numberOfLines = textExpanded ? 0 : 4
+        bodyLabel.lineBreakMode = textExpanded ? .byWordWrapping : .byTruncatingTail
 
         likeIcon.isHidden = comment.likeCount <= 0
         likeLabel.isHidden = comment.likeCount <= 0
@@ -697,7 +844,20 @@ final class CommentCell: UITableViewCell {
             ? Formatters.compactCount(comment.likeCount)
             : comment.likeCountText
         heartedIcon.isHidden = !comment.isHearted
+        heartedIcon.accessibilityLabel = "Hearted by the creator"
 
+        // A comment that points at a moment in the video gets a control that seeks there, which is
+        // what tapping the highlighted timestamp does on Android.
+        timestamp = CommentsViewController.firstTimestamp(in: comment.text)
+        if let seconds = timestamp {
+            timestampButton.isHidden = false
+            timestampButton.setTitle("Jump to " + Formatters.playbackTime(seconds), for: .normal)
+        } else {
+            timestampButton.isHidden = true
+            timestampButton.setTitle(nil, for: .normal)
+        }
+
+        // Only a top-level comment carries the control; a reply's own replies are shown with it.
         let replyCount = max(comment.replyCount, comment.replies.count)
         let showReplies = !isReply && (replyCount > 0 || comment.continuation != nil)
         repliesButton.isHidden = !showReplies
@@ -724,21 +884,36 @@ final class CommentCell: UITableViewCell {
     /// Repaints the cell in the current palette.
     func applyTheme() {
         let scheme = FlowTheme.shared.scheme
-        authorLabel.textColor = scheme.onSurface
+        // Android sets the author in the accent colour and gives the video's creator a chip in the
+        // secondary container instead, so the creator is recognisable at a glance.
+        if isCreatorComment {
+            authorLabel.textColor = scheme.onSecondaryContainer
+            authorLabel.backgroundColor = scheme.secondaryContainer
+        } else {
+            authorLabel.textColor = scheme.primary
+            authorLabel.backgroundColor = .clear
+        }
         timeLabel.textColor = scheme.onSurfaceVariant
-        textLabel.textColor = scheme.onSurface
+        bodyLabel.textColor = scheme.onSurface
         pinnedLabel.textColor = scheme.onSurfaceVariant
         pinnedIcon.iconColor = scheme.onSurfaceVariant
         verifiedIcon.iconColor = scheme.onSurfaceVariant
         likeIcon.iconColor = scheme.onSurfaceVariant
         likeLabel.textColor = scheme.onSurfaceVariant
         heartedIcon.iconColor = FlowTheme.youtubeRed
+        threadLine.backgroundColor = scheme.outlineVariant
+        timestampButton.setTitleColor(scheme.primary, for: .normal)
         repliesButton.setTitleColor(scheme.primary, for: .normal)
         avatarView.placeholderColor = scheme.surfaceVariant
     }
 
     @objc private func handleTextTap() {
         onToggleText?()
+    }
+
+    @objc private func handleTimestampTap() {
+        guard let seconds = timestamp else { return }
+        onSeek?(seconds)
     }
 
     @objc private func handleRepliesTap() {
@@ -761,6 +936,7 @@ final class CommentsMoreCell: UITableViewCell {
 
     private let button = FlowButton.make("Load more replies", style: .text)
     private let spinner = UIActivityIndicatorView(style: .gray)
+    private var buttonLeading: NSLayoutConstraint!
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -784,19 +960,34 @@ final class CommentsMoreCell: UITableViewCell {
         spinner.hidesWhenStopped = true
         contentView.addSubview(spinner)
 
+        // Aligned with the reply text column above it, so the control reads as part of the thread.
+        buttonLeading = button.leadingAnchor.constraint(
+            equalTo: contentView.leadingAnchor,
+            constant: CommentsMoreCell.textColumn(for: 1)
+        )
+        // `FlowButton` floors itself at 40 points, so the row is as tall as the button rather than
+        // pinning it to a height the button would then have to break.
         NSLayoutConstraint.activate([
-            button.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 60.0),
+            buttonLeading,
             button.topAnchor.constraint(equalTo: contentView.topAnchor, constant: FlowSpacing.xs),
             button.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -FlowSpacing.md),
-            button.heightAnchor.constraint(equalToConstant: 36.0),
+            button.heightAnchor.constraint(equalToConstant: 40.0),
 
             spinner.leadingAnchor.constraint(equalTo: button.trailingAnchor, constant: FlowSpacing.md),
             spinner.centerYAnchor.constraint(equalTo: button.centerYAnchor),
         ])
     }
 
+    /// Where a reply's text column starts: the screen margin, the indent, the 24-point avatar and
+    /// the gap after it — the same arithmetic `CommentCell` lays a reply out with.
+    static func textColumn(for depth: Int) -> CGFloat {
+        let indent = CGFloat(max(depth, 1)) * 28.0
+        return FlowSpacing.xl + indent + 24.0 + FlowSpacing.lg
+    }
+
     /// Shows the spinner in place of the label while a page is loading.
-    func configure(isLoading: Bool) {
+    func configure(isLoading: Bool, depth: Int = 1) {
+        buttonLeading.constant = CommentsMoreCell.textColumn(for: depth)
         button.isHidden = isLoading
         if isLoading {
             spinner.startAnimating()
@@ -819,5 +1010,55 @@ extension CommentsViewController {
     static func displayAuthor(_ author: String) -> String {
         let trimmed = author.trimmed
         return trimmed.hasPrefix("@") ? trimmed : "@" + trimmed
+    }
+
+    /// A name reduced to the handle it is compared by, so `@Ana` and `ana` are the same person.
+    static func handle(_ author: String) -> String {
+        var name = author.trimmed.lowercased()
+        if name.hasPrefix("@") { name.removeFirst() }
+        return name
+    }
+
+    /// The `@handle` a reply opens with, when it opens with one.
+    ///
+    /// YouTube stores replies flat and marks a reply-to-a-reply only with this mention, so it is
+    /// the one thing that says who was answering whom.
+    static func leadingMention(in text: String) -> String? {
+        let pattern = "^\\s*@([^\\s,:]+)"
+        guard let expression = try? NSRegularExpression(pattern: pattern, options: []) else { return nil }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = expression.firstMatch(in: text, options: [], range: range),
+              match.numberOfRanges > 1,
+              let swiftRange = Range(match.range(at: 1), in: text) else {
+            return nil
+        }
+        return String(text[swiftRange]).lowercased()
+    }
+
+    /// The first `m:ss` or `h:mm:ss` in a comment, as seconds.
+    ///
+    /// YouTube marks these spans in the rich text it sends; the app only gets the plain string, so
+    /// the pattern is matched here. A bare number is not a timestamp — it needs the colon — which
+    /// keeps "I watched 2 times" from offering to seek to two seconds.
+    static func firstTimestamp(in text: String) -> TimeInterval? {
+        let pattern = "(?<![0-9:])([0-9]{1,2}):([0-5][0-9])(?::([0-5][0-9]))?(?![0-9:])"
+        guard let expression = try? NSRegularExpression(pattern: pattern, options: []) else { return nil }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = expression.firstMatch(in: text, options: [], range: range) else { return nil }
+
+        func group(_ index: Int) -> Int? {
+            guard index < match.numberOfRanges else { return nil }
+            let groupRange = match.range(at: index)
+            guard groupRange.location != NSNotFound, let swiftRange = Range(groupRange, in: text) else {
+                return nil
+            }
+            return Int(text[swiftRange])
+        }
+
+        guard let first = group(1), let second = group(2) else { return nil }
+        if let third = group(3) {
+            return TimeInterval(first * 3_600 + second * 60 + third)
+        }
+        return TimeInterval(first * 60 + second)
     }
 }

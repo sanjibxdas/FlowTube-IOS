@@ -611,7 +611,7 @@ final class SearchVideoCell: UICollectionViewCell {
 
     static let reuseIdentifier = "SearchVideoCell"
 
-    private let thumbnailView = AsyncImageView()
+    private let thumbnailView = AsyncImageView(frame: .zero)
     private let durationLabel = PaddedLabel()
     private let titleLabel = UILabel()
     private let metadataLabel = UILabel()
@@ -780,7 +780,7 @@ final class SearchChannelShelfCell: UICollectionViewCell {
 /// One channel in a horizontal shelf: a round avatar, the name and the subscriber count.
 final class ChannelChipView: UIControl {
 
-    private let avatarView = AsyncImageView()
+    private let avatarView = AsyncImageView(frame: .zero)
     private let nameLabel = UILabel()
     private let detailLabel = UILabel()
 
@@ -942,7 +942,7 @@ final class SearchPlaylistShelfCell: UICollectionViewCell {
 /// One playlist in a horizontal shelf: a 16:9 cover, the title and the item count.
 final class PlaylistChipView: UIControl {
 
-    private let coverView = AsyncImageView()
+    private let coverView = AsyncImageView(frame: .zero)
     private let countLabel = PaddedLabel()
     private let titleLabel = UILabel()
     private let detailLabel = UILabel()

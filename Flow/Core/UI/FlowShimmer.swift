@@ -126,11 +126,11 @@ final class FlowShimmerCard: UIView {
             thumbnail.heightAnchor.constraint(equalTo: thumbnail.widthAnchor, multiplier: 9.0 / 16.0),
 
             titleLine.leadingAnchor.constraint(equalTo: leadingAnchor),
-            titleLine.trailingAnchor.constraint(equalTo: trailingAnchor, multiplier: 0.85),
+            titleLine.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.85),
             titleLine.topAnchor.constraint(equalTo: thumbnail.bottomAnchor, constant: FlowSpacing.md),
 
             subtitleLine.leadingAnchor.constraint(equalTo: leadingAnchor),
-            subtitleLine.trailingAnchor.constraint(equalTo: trailingAnchor, multiplier: 0.55),
+            subtitleLine.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.55),
             subtitleLine.topAnchor.constraint(equalTo: titleLine.bottomAnchor, constant: FlowSpacing.sm),
             subtitleLine.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])

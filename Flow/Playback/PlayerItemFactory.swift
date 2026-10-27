@@ -153,8 +153,8 @@ final class HeaderInjectingAssetLoader: NSObject, AVAssetResourceLoaderDelegate,
            let information = loadingRequest.contentInformationRequest {
             information.contentType = http.mimeType
             information.isByteRangeAccessSupported = http.statusCode == 206
-                || http.value(forHTTPHeaderField: "Accept-Ranges") == "bytes"
-            if let lengthText = http.value(forHTTPHeaderField: "Content-Length"), let length = Int64(lengthText) {
+                || PlayerItemFactory.header("Accept-Ranges", in: http) == "bytes"
+            if let lengthText = PlayerItemFactory.header("Content-Length", in: http), let length = Int64(lengthText) {
                 information.contentLength = length
             } else {
                 information.contentLength = response.expectedContentLength
@@ -430,10 +430,20 @@ enum PlayerItemFactory {
 
     private static func loadError(for asset: AVAsset, keys: [String]) -> FlowError? {
         for key in keys {
-            var status = AVKeyValueStatus.unknown
-            let error = asset.statusOfValue(forKey: key, error: &status)
+            var error: NSError?
+            let status = asset.statusOfValue(forKey: key, error: &error)
             if status == .failed {
                 return .underlying(error?.localizedDescription ?? "The stream could not be loaded.")
+            }
+        }
+        return nil
+    }
+
+    /// Reads a response header without `value(forHTTPHeaderField:)`, which is iOS 13 and later.
+    fileprivate static func header(_ name: String, in response: HTTPURLResponse) -> String? {
+        for (key, value) in response.allHeaderFields {
+            if let key = key as? String, key.caseInsensitiveCompare(name) == .orderedSame {
+                return value as? String
             }
         }
         return nil

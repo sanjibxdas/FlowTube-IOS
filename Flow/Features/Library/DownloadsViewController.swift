@@ -45,7 +45,14 @@ final class DownloadsViewController: UIViewController {
 
     private let kindControl = FlowSegmentedControl()
     private let searchField = LibrarySearchField(placeholder: "Search downloads")
-    private let sortButton = FlowIconButton.make(.sort, color: .clear, size: 22.0, target: nil, action: nil)
+    /// Built without a target: the action is attached once the view is loaded, because a stored
+    /// property cannot refer to `self` while the controller is still being initialised.
+    private let sortButton: FlowIconButton = {
+        let button = FlowIconButton()
+        button.configure(icon: .sort, color: .clear, size: 22.0)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        return button
+    }()
     private let tableView = UITableView(frame: .zero, style: .plain)
     private let emptyState = FlowEmptyState.make(kind: .custom(
         icon: .download,
@@ -405,7 +412,7 @@ extension DownloadsViewController: UITableViewDataSource, UITableViewDelegate {
     }
 
     func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
-        let hasRows = numberOfRows(inSection: section) > 0
+        let hasRows = tableView.numberOfRows(inSection: section) > 0
         guard hasRows, let header = tableView.dequeueReusableHeaderFooterView(
             withIdentifier: DownloadsSectionHeader.reuseIdentifier
         ) as? DownloadsSectionHeader else {
@@ -752,8 +759,16 @@ final class DownloadRowCell: UITableViewCell {
     private let progressTrack = UIView()
     private let progressFill = UIView()
     private let progressLabel = UILabel()
-    private let primaryButton = FlowIconButton.make(.pause, color: .clear, size: 22.0, target: nil, action: nil)
-    private let cancelButton = FlowIconButton.make(.close, color: .clear, size: 20.0, target: nil, action: nil)
+    private let primaryButton: FlowIconButton = {
+        let button = FlowIconButton()
+        button.configure(icon: .pause, color: .clear, size: 22.0)
+        return button
+    }()
+    private let cancelButton: FlowIconButton = {
+        let button = FlowIconButton()
+        button.configure(icon: .close, color: .clear, size: 20.0)
+        return button
+    }()
     private var progressWidth: NSLayoutConstraint?
     private var fraction: CGFloat = 0.0
     private var record: DownloadRecord?

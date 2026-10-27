@@ -37,6 +37,9 @@ platform mechanism · **N/A on iOS 12** = physically impossible on the target OS
 | Discovery | Search + suggestions | `SearchViewController` | Done |
 | Discovery | Channel | `ChannelViewController` | Done |
 | Discovery | Playlist | `PlaylistViewController` | Done |
+| Discovery | Watch page (player + metadata + related) | `WatchViewController` embedding `VideoPlayerViewController` as a child | Done |
+| Discovery | Comments, replies, sorting | `CommentsViewController` (Top/Newest/Oldest applied on the device, since the facade exposes one comment continuation) | Done |
+| Discovery | Like / dislike a video | `WatchReactions` in `UserDefaults` — the app works signed out and the facade has no rating endpoint | iOS equivalent |
 | Discovery | Subscriptions feed | `SubscriptionsViewController` | Done |
 | Discovery | Notifications | `NotificationsViewController` | Done |
 | Discovery | FlowNeuro recommendations | on-device topic-vector ranker in `HomeViewModel` | Done |

@@ -251,6 +251,14 @@ final class SubtitleRenderer: UIView {
         showText(cue.text, animated: true)
     }
 
+    /// Shows static text in the current style, for the subtitle settings preview. The player never
+    /// calls this: it exists so the settings screen can show the real renderer rather than a copy
+    /// of it that could drift.
+    func showPreviewText(_ text: String) {
+        visibleCue = nil
+        showText(text, animated: false)
+    }
+
     /// Removes the caption from screen without forgetting the track.
     func clearVisibleCue() {
         visibleCue = nil

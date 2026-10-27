@@ -19,43 +19,43 @@ enum NoteTimestamps {
         var seen: Set<Int> = []
         var index = text.startIndex
         while index < text.endIndex {
-            guard let character = text[index].wholeNumberValue != nil ? text[index] : nil else {
+            guard text[index].isNumber else {
                 index = text.index(after: index)
                 continue
             }
             let start = index
-            var cursor = text.index(after: index)
-            var digits = String(character)
-            while cursor < text.endIndex, let value = text[cursor].wholeNumberValue {
-                digits.append(String(value))
+            var cursor = index
+            var digits = ""
+            while cursor < text.endIndex, text[cursor].isNumber {
+                digits.append(text[cursor])
                 cursor = text.index(after: cursor)
             }
+            // A time needs a colon immediately after the first run of digits.
             guard cursor < text.endIndex, text[cursor] == ":" else {
                 index = cursor
                 continue
             }
             cursor = text.index(after: cursor)
-            var secondsDigits = ""
-            while cursor < text.endIndex, let value = text[cursor].wholeNumberValue, secondsDigits.count < 2 {
-                secondsDigits.append(String(value))
+            var secondDigits = ""
+            while cursor < text.endIndex, text[cursor].isNumber, secondDigits.count < 2 {
+                secondDigits.append(text[cursor])
                 cursor = text.index(after: cursor)
             }
-            guard secondsDigits.count == 2, let secondsPart = Int(secondsDigits) else {
+            guard secondDigits.count == 2, let secondsPart = Int(secondDigits) else {
                 index = cursor
                 continue
             }
             var total = 0
-            var isClock = false
             if cursor < text.endIndex, text[cursor] == ":" {
-                // h:mm:ss — the part before the first colon was the hours.
+                // h:mm:ss — the first run of digits was the hours.
                 guard let hours = Int(digits) else {
                     index = cursor
                     continue
                 }
                 cursor = text.index(after: cursor)
                 var minuteDigits = ""
-                while cursor < text.endIndex, let value = text[cursor].wholeNumberValue, minuteDigits.count < 2 {
-                    minuteDigits.append(String(value))
+                while cursor < text.endIndex, text[cursor].isNumber, minuteDigits.count < 2 {
+                    minuteDigits.append(text[cursor])
                     cursor = text.index(after: cursor)
                 }
                 guard minuteDigits.count == 2, let minutes = Int(minuteDigits) else {
@@ -63,7 +63,6 @@ enum NoteTimestamps {
                     continue
                 }
                 total = hours * 3600 + minutes * 60 + secondsPart
-                isClock = true
             } else {
                 guard let minutes = Int(digits) else {
                     index = cursor
@@ -71,7 +70,6 @@ enum NoteTimestamps {
                 }
                 total = minutes * 60 + secondsPart
             }
-            _ = isClock
             let range = start..<cursor
             if !seen.contains(total) {
                 seen.insert(total)
@@ -266,7 +264,7 @@ final class NoteCell: UITableViewCell {
         checkView.iconColor = selected ? FlowTheme.shared.primary : FlowTheme.shared.onSurfaceVariant
         accessoryType = selecting ? .none : .disclosureIndicator
         if isChannelNote {
-            thumbnail.setImage(url: "")
+            thumbnail.clearImage()
         } else {
             thumbnail.setImage(url: "https://i.ytimg.com/vi/" + note.videoId + "/mqdefault.jpg")
         }
@@ -420,7 +418,7 @@ final class NoteDetailContent: UIView {
         subtitleLabel.isHidden = note.channelName.isEmpty
         bodyLabel.text = note.body
         if isChannelNote {
-            thumbnail.setImage(url: "")
+            thumbnail.clearImage()
             thumbnail.isHidden = true
         } else {
             thumbnail.isHidden = false
@@ -482,8 +480,15 @@ final class NoteEditorContent: UIView, UITextViewDelegate {
     private let cancelButton = FlowButton.make("Cancel", style: .text)
     private let insertTimeButton = FlowButton.make("Insert time", style: .outlined, icon: .clock)
 
-    private var initialBody: String = ""
     private var initialTimestamp: TimeInterval = 0.0
+    private var buttonsBottom: NSLayoutConstraint?
+    private var keyboardObservers: [NSObjectProtocol] = []
+
+    deinit {
+        for observer in keyboardObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -574,27 +579,61 @@ final class NoteEditorContent: UIView, UITextViewDelegate {
             textView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: FlowSpacing.xl),
             textView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -FlowSpacing.xl),
             textView.topAnchor.constraint(equalTo: targetRow.bottomAnchor, constant: FlowSpacing.md),
-            textView.heightAnchor.constraint(greaterThanOrEqualToConstant: 120.0),
+            textView.bottomAnchor.constraint(equalTo: insertTimeButton.topAnchor, constant: -FlowSpacing.md),
 
             placeholderLabel.leadingAnchor.constraint(equalTo: textView.leadingAnchor, constant: FlowSpacing.md + 4.0),
             placeholderLabel.topAnchor.constraint(equalTo: textView.topAnchor, constant: FlowSpacing.md),
 
             insertTimeButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: FlowSpacing.xl),
-            insertTimeButton.topAnchor.constraint(equalTo: textView.bottomAnchor, constant: FlowSpacing.md),
             insertTimeButton.heightAnchor.constraint(equalToConstant: 40.0),
 
             buttons.leadingAnchor.constraint(equalTo: leadingAnchor, constant: FlowSpacing.xl),
             buttons.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -FlowSpacing.xl),
             buttons.topAnchor.constraint(equalTo: insertTimeButton.bottomAnchor, constant: FlowSpacing.md),
-            buttons.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -FlowSpacing.md),
             buttons.heightAnchor.constraint(equalToConstant: 48.0),
         ])
+        let bottom = buttons.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -FlowSpacing.md)
+        bottom.priority = UILayoutPriority(999.0)
+        bottom.isActive = true
+        buttonsBottom = bottom
+        observeKeyboard()
         applyTheme()
+    }
+
+    /// Keeps the buttons above the keyboard: the sheet's own height does not change when the
+    /// keyboard appears, so the editor lifts its bottom edge by the overlap instead.
+    private func observeKeyboard() {
+        let center = NotificationCenter.default
+        keyboardObservers.append(center.addObserver(
+            forName: UIResponder.keyboardWillChangeFrameNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let self = self, let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+            guard self.window != nil else { return }
+            let converted = self.convert(frame, from: nil)
+            let overlap = max(0.0, self.bounds.maxY - converted.minY)
+            self.buttonsBottom?.constant = -(overlap + FlowSpacing.md)
+            let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? FlowMotion.standard
+            UIView.animate(withDuration: duration, animations: {
+                self.superview?.layoutIfNeeded()
+            })
+        })
+        keyboardObservers.append(center.addObserver(
+            forName: UIResponder.keyboardWillHideNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            self.buttonsBottom?.constant = -FlowSpacing.md
+            UIView.animate(withDuration: FlowMotion.standard, animations: {
+                self.superview?.layoutIfNeeded()
+            })
+        })
     }
 
     /// Fills the editor. `body` is empty for a new note.
     func configure(body: String, targetId: String, timestamp: TimeInterval) {
-        initialBody = body
         initialTimestamp = timestamp
         textView.text = body
         targetField.text = targetId
@@ -690,9 +729,9 @@ final class NotesViewController: UIViewController {
     private let tableView = UITableView(frame: .zero, style: .plain)
     private let searchBar = NotesSearchBar()
     private let filterChips = FlowChipRow()
-    private let sortButton = FlowIconButton.make(.sort, color: .clear, size: 22.0, target: nil, action: nil)
-    private let selectButton = FlowIconButton.make(.check, color: .clear, size: 22.0, target: nil, action: nil)
-    private let addButton = FlowIconButton.make(.add, color: .clear, size: 24.0, target: nil, action: nil)
+    private let sortButton = FlowIconButton()
+    private let selectButton = FlowIconButton()
+    private let addButton = FlowIconButton()
     private let emptyState = FlowEmptyState.make(kind: .noNotes)
     private let noMatchState = FlowEmptyState.make(
         kind: .custom(icon: .search, title: "No notes match", message: "Try other words or another filter")
@@ -769,16 +808,19 @@ final class NotesViewController: UIViewController {
         view.addSubview(filterChips)
 
         sortButton.translatesAutoresizingMaskIntoConstraints = false
+        sortButton.configure(icon: .sort, color: FlowTheme.shared.onSurface, size: 22.0)
         sortButton.accessibilityLabel = "Sort notes"
         sortButton.addTarget(self, action: #selector(handleSort), for: .touchUpInside)
         view.addSubview(sortButton)
 
         selectButton.translatesAutoresizingMaskIntoConstraints = false
+        selectButton.configure(icon: .check, color: FlowTheme.shared.onSurface, size: 22.0)
         selectButton.accessibilityLabel = "Select notes"
         selectButton.addTarget(self, action: #selector(handleSelectMode), for: .touchUpInside)
         view.addSubview(selectButton)
 
         addButton.translatesAutoresizingMaskIntoConstraints = false
+        addButton.configure(icon: .add, color: FlowTheme.shared.onSurface, size: 24.0)
         addButton.accessibilityLabel = "Add note"
         addButton.addTarget(self, action: #selector(handleAdd), for: .touchUpInside)
         view.addSubview(addButton)
@@ -806,18 +848,18 @@ final class NotesViewController: UIViewController {
 
             sortButton.trailingAnchor.constraint(equalTo: selectButton.leadingAnchor, constant: -FlowSpacing.xs),
             sortButton.centerYAnchor.constraint(equalTo: filterChips.centerYAnchor),
-            sortButton.widthAnchor.constraint(equalToConstant: 40.0),
-            sortButton.heightAnchor.constraint(equalToConstant: 40.0),
+            sortButton.widthAnchor.constraint(equalToConstant: 44.0),
+            sortButton.heightAnchor.constraint(equalToConstant: 44.0),
 
             selectButton.trailingAnchor.constraint(equalTo: addButton.leadingAnchor, constant: -FlowSpacing.xs),
             selectButton.centerYAnchor.constraint(equalTo: filterChips.centerYAnchor),
-            selectButton.widthAnchor.constraint(equalToConstant: 40.0),
-            selectButton.heightAnchor.constraint(equalToConstant: 40.0),
+            selectButton.widthAnchor.constraint(equalToConstant: 44.0),
+            selectButton.heightAnchor.constraint(equalToConstant: 44.0),
 
             addButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -FlowSpacing.md),
             addButton.centerYAnchor.constraint(equalTo: filterChips.centerYAnchor),
-            addButton.widthAnchor.constraint(equalToConstant: 40.0),
-            addButton.heightAnchor.constraint(equalToConstant: 40.0),
+            addButton.widthAnchor.constraint(equalToConstant: 44.0),
+            addButton.heightAnchor.constraint(equalToConstant: 44.0),
 
             emptyState.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             emptyState.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -959,7 +1001,7 @@ final class NotesViewController: UIViewController {
         selectionBar.isHidden = !isSelecting
         selectionLabel.text = selectedIds.isEmpty
             ? "Select notes"
-            : String(selectedIds.count) + (selectedIds.count == 1 ? " selected" : " selected")
+            : String(selectedIds.count) + " selected"
         shareSelectedButton.isEnabled = !selectedIds.isEmpty
         deleteSelectedButton.isEnabled = !selectedIds.isEmpty
         shareSelectedButton.applyTheme()
@@ -986,6 +1028,7 @@ final class NotesViewController: UIViewController {
         selectedIds.removeAll()
         selectButton.setIcon(.close)
         selectButton.accessibilityLabel = "Done selecting"
+        tableView.allowsMultipleSelectionDuringEditing = true
         tableView.setEditing(true, animated: true)
         tableView.reloadData()
         updateSelectionBar()

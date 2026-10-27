@@ -2,10 +2,8 @@ import UIKit
 
 /// Playback: the defaults every video starts with, and what the player does on its own.
 ///
-/// The screen is grouped the way the Android player settings are — video, audio, gestures, and the
-/// mini player — with each choice opening a sheet of options rather than a second screen. A sheet
-/// is used because the list of qualities or speeds is short and the current value stays visible
-/// behind it.
+/// Each choice that has more than two values opens a sheet of options rather than pushing a second
+/// screen: the list is short, and the current setting stays visible behind the sheet.
 final class PlaybackSettingsViewController: SettingsListViewController {
 
     private let prefs = FlowApp.shared.prefs
@@ -23,13 +21,10 @@ final class PlaybackSettingsViewController: SettingsListViewController {
         ("144", "144p"),
     ]
 
-    /// The speeds the player's menu offers. The slider can reach any value between 0.25 and 2.0.
+    /// The speeds the player's menu offers. The stored value is clamped to 0.25...2.0.
     static let speedChoices: [Double] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
 
-    /// The delays before autoplay switches to the next video, in seconds. Zero switches at once.
-    static let autoplayDelays: [Int] = [0, 3, 5, 10, 15, 20, 30]
-
-    /// The sleep timer's default lengths, in minutes.
+    /// The lengths the sleep timer can default to, in minutes. Zero means no default.
     static let sleepChoices: [Int] = [0, 5, 10, 15, 20, 30, 45, 60, 90, 120]
 
     /// The label for a stored quality value.
@@ -37,14 +32,8 @@ final class PlaybackSettingsViewController: SettingsListViewController {
         if let match = qualityChoices.first(where: { $0.value == value }) {
             return match.label
         }
-        // A stored height with no exact match is still a height: show it as one.
         if value == "auto" || value.isEmpty { return "Auto" }
         return value + "p"
-    }
-
-    /// The label for a stored autoplay delay.
-    static func autoplayLabel(for seconds: Int) -> String {
-        return seconds <= 0 ? "None (switch immediately)" : "\(seconds) seconds"
     }
 
     /// The label for a stored sleep-timer default.
@@ -68,17 +57,14 @@ final class PlaybackSettingsViewController: SettingsListViewController {
         return [
             videoSection(),
             audioSection(),
-            gesturesSection(),
-            miniPlayerSection(),
         ]
     }
 
     private func videoSection() -> SettingsSection {
         let quality = prefs.string(for: .playbackQuality) ?? "auto"
-        let speed = prefs.playbackSpeed
         return SettingsSection(
             header: "Video",
-            footer: "Auto picks the best quality the connection can carry.",
+            footer: "Auto picks the best quality the connection can carry. A video you downloaded plays from the file on the device.",
             rows: [
                 .nav(
                     "Video quality",
@@ -93,22 +79,9 @@ final class PlaybackSettingsViewController: SettingsListViewController {
                     "Playback Speed",
                     icon: .next,
                     subtitle: "The speed a video starts at",
-                    value: Formatters.playbackSpeed(speed),
+                    value: Formatters.playbackSpeed(prefs.playbackSpeed),
                     action: { [weak self] in
                         self?.chooseSpeed()
-                    }
-                ),
-                .nav(
-                    "Autoplay delay",
-                    icon: .clock,
-                    subtitle: "Count down before the next video starts",
-                    value: PlaybackSettingsViewController.autoplayLabel(
-                        for: prefs.int(for: .sleepTimerMinutes, fallback: 0) == 0
-                            ? prefs.int(for: .autoplayNext, fallback: 1) * 5
-                            : 0
-                    ),
-                    action: { [weak self] in
-                        self?.chooseAutoplayDelay()
                     }
                 ),
                 .toggle(
@@ -118,7 +91,6 @@ final class PlaybackSettingsViewController: SettingsListViewController {
                     isOn: prefs.bool(for: .autoplayNext, fallback: true),
                     onChange: { [weak self] value in
                         self?.prefs.set(value, for: .autoplayNext)
-                        self?.rebuild()
                     }
                 ),
                 .toggle(
@@ -130,17 +102,6 @@ final class PlaybackSettingsViewController: SettingsListViewController {
                         self?.prefs.set(value, for: .resumePlayback)
                     }
                 ),
-                .toggle(
-                    "Remember Playback Speed",
-                    icon: .equalizer,
-                    subtitle: "Apply the last used playback speed to videos",
-                    isOn: prefs.bool(for: .playbackSpeed, fallback: 1.0) != 1.0,
-                    onChange: { [weak self] value in
-                        guard let self = self else { return }
-                        self.prefs.playbackSpeed = value ? self.prefs.playbackSpeed : 1.0
-                        self.rebuild()
-                    }
-                ),
             ]
         )
     }
@@ -148,7 +109,7 @@ final class PlaybackSettingsViewController: SettingsListViewController {
     private func audioSection() -> SettingsSection {
         return SettingsSection(
             header: "Audio",
-            footer: "Background play keeps the audio going when you leave the app.",
+            footer: "Background play keeps the audio going when you leave the app. Picture-in-picture keeps the video in a floating window.",
             rows: [
                 .toggle(
                     "Background Play",
@@ -192,51 +153,16 @@ final class PlaybackSettingsViewController: SettingsListViewController {
         )
     }
 
-    private func gesturesSection() -> SettingsSection {
-        return SettingsSection(
-            header: "Gestures",
-            footer: "Double-tap seek and the swipe gestures are set per player in the Android app; on iOS the player follows these defaults.",
-            rows: [
-                .detail(
-                    icon: .edit,
-                    title: "Double-tap seek",
-                    subtitle: "How far a double tap on either side jumps",
-                    value: "10 seconds"
-                ),
-                .detail(
-                    icon: .volume,
-                    title: "Brightness & Volume Gestures",
-                    subtitle: "Swipe the left edge for brightness, the right for volume",
-                    value: "On"
-                ),
-            ]
-        )
-    }
-
-    private func miniPlayerSection() -> SettingsSection {
-        return SettingsSection(
-            header: "Mini player",
-            footer: "The mini player stays above the tab bar on every screen.",
-            rows: [
-                .detail(
-                    icon: .pip,
-                    title: "Picture-in-picture and mini player",
-                    subtitle: "Keep the video visible when you leave the player",
-                    value: prefs.bool(for: .pictureInPicture, fallback: true) ? "On" : "Off"
-                ),
-            ]
-        )
-    }
-
     // MARK: - Sheets
 
     private func chooseQuality() {
         let current = prefs.string(for: .playbackQuality) ?? "auto"
         let choices = PlaybackSettingsViewController.qualityChoices.map { choice -> FlowActionSheetContent.Action in
-            let title = choice.label == PlaybackSettingsViewController.qualityLabel(for: current)
-                ? choice.label + "  ✓"
-                : choice.label
-            return FlowActionSheetContent.Action(title: title, icon: nil) { [weak self] in
+            let isCurrent = choice.value == current
+            return FlowActionSheetContent.Action(
+                title: isCurrent ? choice.label + "  ✓" : choice.label,
+                icon: nil
+            ) { [weak self] in
                 self?.prefs.set(choice.value, for: .playbackQuality)
                 self?.rebuild()
             }
@@ -248,8 +174,11 @@ final class PlaybackSettingsViewController: SettingsListViewController {
         let current = prefs.playbackSpeed
         let choices = PlaybackSettingsViewController.speedChoices.map { speed -> FlowActionSheetContent.Action in
             let label = Formatters.playbackSpeed(speed)
-            let title = abs(speed - current) < 0.001 ? label + "  ✓" : label
-            return FlowActionSheetContent.Action(title: title, icon: nil) { [weak self] in
+            let isCurrent = abs(speed - current) < 0.001
+            return FlowActionSheetContent.Action(
+                title: isCurrent ? label + "  ✓" : label,
+                icon: nil
+            ) { [weak self] in
                 guard let self = self else { return }
                 self.prefs.playbackSpeed = speed
                 FlowApp.shared.playback.setPlaybackSpeed(speed)
@@ -259,30 +188,15 @@ final class PlaybackSettingsViewController: SettingsListViewController {
         presentSheet(title: "Playback Speed", actions: choices)
     }
 
-    private func chooseAutoplayDelay() {
-        let stored = prefs.int(for: .autoplayNext, fallback: 1)
-        let current = PlaybackSettingsViewController.autoplayDelays[
-            min(max(stored, 0), PlaybackSettingsViewController.autoplayDelays.count - 1)
-        ]
-        let choices = PlaybackSettingsViewController.autoplayDelays.map { seconds -> FlowActionSheetContent.Action in
-            let label = PlaybackSettingsViewController.autoplayLabel(for: seconds)
-            let title = seconds == current ? label + "  ✓" : label
-            return FlowActionSheetContent.Action(title: title, icon: nil) { [weak self] in
-                guard let self = self else { return }
-                let index = PlaybackSettingsViewController.autoplayDelays.firstIndex(of: seconds) ?? 1
-                self.prefs.set(index, for: .autoplayNext)
-                self.rebuild()
-            }
-        }
-        presentSheet(title: "Autoplay delay", actions: choices)
-    }
-
     private func chooseSleepDefault() {
         let current = prefs.int(for: .sleepTimerMinutes, fallback: 0)
         let choices = PlaybackSettingsViewController.sleepChoices.map { minutes -> FlowActionSheetContent.Action in
             let label = PlaybackSettingsViewController.sleepLabel(for: minutes)
-            let title = minutes == current ? label + "  ✓" : label
-            return FlowActionSheetContent.Action(title: title, icon: nil) { [weak self] in
+            let isCurrent = minutes == current
+            return FlowActionSheetContent.Action(
+                title: isCurrent ? label + "  ✓" : label,
+                icon: nil
+            ) { [weak self] in
                 self?.prefs.set(minutes, for: .sleepTimerMinutes)
                 self?.rebuild()
             }

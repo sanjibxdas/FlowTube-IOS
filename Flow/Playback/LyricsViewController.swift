@@ -227,7 +227,7 @@ final class LyricsViewController: PlaybackSheetController {
     // MARK: - Dependencies
 
     private let videoId: String
-    private let title: String
+    private let trackTitle: String
     private let artist: String
     private let duration: TimeInterval
     private let service: PlaybackService
@@ -276,7 +276,7 @@ final class LyricsViewController: PlaybackSheetController {
         service: PlaybackService = .shared
     ) {
         self.videoId = videoId
-        self.title = title
+        self.trackTitle = title
         self.artist = artist
         self.duration = duration
         self.service = service
@@ -285,7 +285,7 @@ final class LyricsViewController: PlaybackSheetController {
 
     required init?(coder: NSCoder) {
         videoId = ""
-        title = ""
+        trackTitle = ""
         artist = ""
         duration = 0
         service = .shared
@@ -361,7 +361,7 @@ final class LyricsViewController: PlaybackSheetController {
         }
         headerView.addSubviewForAutoLayout(offsetUpButton)
 
-        titleLabel.text = title
+        titleLabel.text = trackTitle
         artistLabel.text = artist
 
         NSLayoutConstraint.activate([
@@ -463,7 +463,7 @@ final class LyricsViewController: PlaybackSheetController {
         }
         LyricsService.shared.lyrics(
             videoId: videoId,
-            title: title,
+            title: trackTitle,
             artist: artist,
             duration: Int(duration)
         ) { [weak self] result in

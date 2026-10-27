@@ -122,7 +122,7 @@ final class FlowWrapView: UIView {
     }
 
     override var intrinsicContentSize: CGSize {
-        return CGSize(width: UIViewNoIntrinsicMetric, height: measuredHeight)
+        return CGSize(width: UIView.noIntrinsicMetric, height: measuredHeight)
     }
 
     @discardableResult

@@ -277,14 +277,14 @@ final class AudioEngine {
             unprepare: AudioEngine.tapUnprepare,
             process: AudioEngine.tapProcess
         )
-        var tap: MTAudioProcessingTap?
+        var tap: Unmanaged<MTAudioProcessingTap>?
         let status = MTAudioProcessingTapCreate(
             kCFAllocatorDefault,
             &callbacks,
             kMTAudioProcessingTapCreationFlag_PostEffects,
             &tap
         )
-        guard status == noErr, let created = tap else {
+        guard status == noErr, let created = tap?.takeRetainedValue() else {
             // The context is only consumed by a successful create; releasing it here keeps the
             // retain balanced when the tap cannot be made.
             Unmanaged<TapContext>.fromOpaque(context).release()
@@ -314,12 +314,12 @@ final class AudioEngine {
     }
 
     private static let tapFinalize: MTAudioProcessingTapFinalizeCallback = { tap in
-        guard let storage = MTAudioProcessingTapGetStorage(tap) else { return }
+        let storage = MTAudioProcessingTapGetStorage(tap)
         Unmanaged<TapContext>.fromOpaque(storage).release()
     }
 
     private static let tapPrepare: MTAudioProcessingTapPrepareCallback = { tap, _, format in
-        guard let storage = MTAudioProcessingTapGetStorage(tap) else { return }
+        let storage = MTAudioProcessingTapGetStorage(tap)
         let context = Unmanaged<TapContext>.fromOpaque(storage).takeUnretainedValue()
         let description = format.pointee
         context.sampleRate = description.mSampleRate > 0 ? description.mSampleRate : 44_100
@@ -332,16 +332,13 @@ final class AudioEngine {
     }
 
     private static let tapUnprepare: MTAudioProcessingTapUnprepareCallback = { tap in
-        guard let storage = MTAudioProcessingTapGetStorage(tap) else { return }
+        let storage = MTAudioProcessingTapGetStorage(tap)
         let context = Unmanaged<TapContext>.fromOpaque(storage).takeUnretainedValue()
         context.filters = []
     }
 
     private static let tapProcess: MTAudioProcessingTapProcessCallback = { tap, numberFrames, _, bufferList, numberFramesOut, _ in
-        guard let storage = MTAudioProcessingTapGetStorage(tap) else {
-            numberFramesOut.pointee = 0
-            return
-        }
+        let storage = MTAudioProcessingTapGetStorage(tap)
         let context = Unmanaged<TapContext>.fromOpaque(storage).takeUnretainedValue()
 
         var flags = MTAudioProcessingTapFlags()
@@ -459,7 +456,7 @@ final class AudioEngine {
             filters.append(BiquadFilter(kind: .gain, frequency: 0, gain: preampGain, q: 1, sampleRate: sampleRate))
             for band in active {
                 filters.append(BiquadFilter(
-                    kind: band.type,
+                    kind: BiquadFilter.Kind(band.type),
                     frequency: band.frequency,
                     gain: band.gain,
                     q: band.q,
@@ -611,6 +608,17 @@ struct BiquadFilter {
         case highShelf
         case lowPass
         case highPass
+
+        /// Maps a band's stored filter type onto the kind the coefficients are built for.
+        init(_ type: EqFilterType) {
+            switch type {
+            case .peak: self = .peak
+            case .lowShelf: self = .lowShelf
+            case .highShelf: self = .highShelf
+            case .lowPass: self = .lowPass
+            case .highPass: self = .highPass
+            }
+        }
     }
 
     private let b0: Double

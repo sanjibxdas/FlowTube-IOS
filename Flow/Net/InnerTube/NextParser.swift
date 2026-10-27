@@ -36,7 +36,7 @@ enum NextParser {
 
         let likeButton = primary["videoActions"]["menuRenderer"]["topLevelButtons"].array
             .first { $0["segmentedLikeDislikeButtonViewModel"].exists || $0["segmentedLikeDislikeButtonRenderer"].exists }
-        let likeCount = likeCountFrom(likeButton)
+        let likeCount = likeButton.map(likeCountFrom) ?? 0
 
         let isLive = primary["badges"].array.contains { badge in
             let style = badge["metadataBadgeRenderer"]["style"].string ?? ""
@@ -332,7 +332,7 @@ enum NextParser {
         let likeCountText = toolbar["likeCountNotliked"].text ?? ""
         let replyCountText = toolbar["replyCount"].text ?? ""
         let toolbarStateKey = properties["toolbarStateKey"].string
-        let toolbarState = toolbarStateKey.flatMap { mutations[$0] }?["engagementToolbarStateEntityPayload"]
+        let toolbarState = toolbarStateKey.flatMap { mutations[$0] }?["engagementToolbarStateEntityPayload"] ?? .empty
         let pinnedText = view["pinnedText"].text ?? properties["pinnedText"].text
 
         return Comment(

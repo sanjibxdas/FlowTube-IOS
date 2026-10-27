@@ -347,8 +347,8 @@ struct YouTubeClient {
         osVersion: "17.7.10.21H450",
         deviceMake: "Apple",
         deviceModel: "iPad7,6",
-        friendlyName: "iPadOS",
         packageName: "com.google.ios.youtube",
+        friendlyName: "iPadOS",
         attestation: .iosGuard
     )
 

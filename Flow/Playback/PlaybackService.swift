@@ -874,7 +874,9 @@ final class PlaybackService: NSObject {
             let target = TimeInterval(segment.endTime) + 0.05
             seek(to: target)
             onSegmentSkipped?(segment)
-            FlowSnackbar.show("Skipped " + segment.displayName.lowercased())
+            if prefs.bool(for: .sponsorBlockNotifyOnSkip, fallback: true) {
+                FlowSnackbar.show("Skipped " + segment.displayName.lowercased())
+            }
             break
         }
     }

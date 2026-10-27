@@ -306,7 +306,14 @@ final class LocalMediaViewController: UIViewController {
         title: "No videos found",
         message: "Videos and music stored on this device will appear here."
     ), actionTitle: "Import files")
-    private let importButton = FlowIconButton.make(.add, color: .clear, size: 24.0, target: nil, action: nil)
+    /// Built without a target: the action is attached once the owner is loaded, because a
+    /// stored property cannot refer to `self` while the owner is still being initialised.
+    private let importButton: FlowIconButton = {
+        let button = FlowIconButton()
+        button.configure(icon: .add, color: .clear, size: 24.0)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        return button
+    }()
     private let spinner = UIActivityIndicatorView(style: .gray)
     private let scanningLabel = UILabel()
 
@@ -1014,7 +1021,14 @@ final class LocalMediaRowCell: UITableViewCell {
     private let titleLabel = UILabel()
     private let detailLabel = UILabel()
     private let badge = FlowBadge.make("")
-    private let moreButton = FlowIconButton.make(.more, color: .clear, size: 20.0, target: nil, action: nil)
+    /// Built without a target: the action is attached once the owner is loaded, because a
+    /// stored property cannot refer to `self` while the owner is still being initialised.
+    private let moreButton: FlowIconButton = {
+        let button = FlowIconButton()
+        button.configure(icon: .more, color: .clear, size: 20.0)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        return button
+    }()
 
     /// Called when the overflow button is tapped.
     var onMore: (() -> Void)?
@@ -1341,8 +1355,22 @@ final class LocalMediaPlayerViewController: UIViewController {
 
     private let item: LocalMediaItem
     private let titleLabel = UILabel()
-    private let closeButton = FlowIconButton.make(.close, color: .white, size: 24.0, target: nil, action: nil)
-    private let playButton = FlowIconButton.make(.pause, color: .white, size: 32.0, target: nil, action: nil)
+    /// Built without a target: the action is attached once the owner is loaded, because a
+    /// stored property cannot refer to `self` while the owner is still being initialised.
+    private let closeButton: FlowIconButton = {
+        let button = FlowIconButton()
+        button.configure(icon: .close, color: .white, size: 24.0)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        return button
+    }()
+    /// Built without a target: the action is attached once the owner is loaded, because a
+    /// stored property cannot refer to `self` while the owner is still being initialised.
+    private let playButton: FlowIconButton = {
+        let button = FlowIconButton()
+        button.configure(icon: .pause, color: .white, size: 32.0)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        return button
+    }()
     private var playerLayer: AVPlayerLayer?
     private var tokens: [ObservationToken] = []
 

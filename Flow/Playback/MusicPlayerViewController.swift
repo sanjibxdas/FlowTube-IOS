@@ -981,9 +981,9 @@ final class MusicArtworkView: UIView {
     /// Called when a drag past the threshold commits to the previous track.
     var onSkipPrevious: (() -> Void)?
 
-    private let currentImage = AsyncImageView()
-    private let nextImage = AsyncImageView()
-    private let previousImage = AsyncImageView()
+    private let currentImage = AsyncImageView(frame: .zero)
+    private let nextImage = AsyncImageView(frame: .zero)
+    private let previousImage = AsyncImageView(frame: .zero)
     private let placeholderIcon = FlowIconView()
     private var currentURL: String = ""
     private var nextURL: String = ""

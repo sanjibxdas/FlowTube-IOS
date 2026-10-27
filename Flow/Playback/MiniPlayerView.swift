@@ -299,7 +299,7 @@ final class MiniPlayerView: UIView {
 /// The circular artwork with a progress arc around it.
 final class MiniArtworkRing: UIView {
 
-    private let imageView = AsyncImageView()
+    private let imageView = AsyncImageView(frame: .zero)
     private let trackLayer = CAShapeLayer()
     private let progressLayer = CAShapeLayer()
     private var progress: CGFloat = 0.0

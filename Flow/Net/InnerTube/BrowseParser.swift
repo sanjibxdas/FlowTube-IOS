@@ -476,7 +476,8 @@ enum BrowseParser {
                             videos.append(contentsOf: shelf.items)
                         }
                     }
-                    if let grid = shelfNode["gridRenderer"], grid.exists {
+                    let grid = shelfNode["gridRenderer"]
+                    if grid.exists {
                         let items = grid["items"].array.compactMap { video(from: $0) }
                         if tabTitle.contains("short") {
                             shorts.append(contentsOf: items)
@@ -612,6 +613,7 @@ enum BrowseParser {
         var continuation: String?
         let sectionList = root["contents"]["twoColumnBrowseResultsRenderer"]["tabs"].array.first?["tabRenderer"]["content"]["sectionListRenderer"]
             ?? root["contents"]["singleColumnBrowseResultsRenderer"]["tabs"].array.first?["tabRenderer"]["content"]["sectionListRenderer"]
+            ?? .empty
         for node in sectionList["contents"].array {
             if let token = node["continuationItemRenderer"].continuationToken {
                 continuation = token
@@ -668,7 +670,7 @@ enum BrowseParser {
         var continuation: String?
 
         let sectionList = root["contents"]["twoColumnBrowseResultsRenderer"]["secondaryContents"]["sectionListRenderer"]
-        let singleColumn = root["contents"]["singleColumnBrowseResultsRenderer"]["tabs"].array.first?["tabRenderer"]["content"]["sectionListRenderer"]
+        let singleColumn = root["contents"]["singleColumnBrowseResultsRenderer"]["tabs"].array.first?["tabRenderer"]["content"]["sectionListRenderer"] ?? .empty
         let contents = sectionList["contents"].array.isEmpty ? singleColumn["contents"].array : sectionList["contents"].array
 
         for node in contents {

@@ -65,7 +65,14 @@ final class HistoryViewController: UIViewController {
         title: "No matching history",
         message: "Try a different search or filter"
     ))
-    private let moreButton = FlowIconButton.make(.more, color: .clear, size: 22.0, target: nil, action: nil)
+    /// Built without a target: the action is attached once the view is loaded, because a stored
+    /// property cannot refer to `self` while the controller is still being initialised.
+    private let moreButton: FlowIconButton = {
+        let button = FlowIconButton()
+        button.configure(icon: .more, color: .clear, size: 22.0)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        return button
+    }()
 
     // MARK: - State
 

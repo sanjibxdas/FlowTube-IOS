@@ -122,6 +122,22 @@ final class PlaylistViewController: UIViewController {
         }
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // A table header is sized by its frame, not by constraints, so it has to be re-measured
+        // whenever the table's width changes — on rotation and in an iPad split view.
+        guard let header = tableView.tableHeaderView else { return }
+        let width = tableView.bounds.width
+        guard width > 0.0, header.frame.width != width else { return }
+        header.frame = CGRect(
+            x: 0,
+            y: 0,
+            width: width,
+            height: PlaylistViewController.headerHeight + PlaylistViewController.searchRowHeight + FlowSpacing.sm
+        )
+        tableView.tableHeaderView = header
+    }
+
     // MARK: - Build
 
     private func buildTable() {
@@ -178,13 +194,13 @@ final class PlaylistViewController: UIViewController {
             searchRow.leadingAnchor.constraint(equalTo: headerContainer.leadingAnchor, constant: FlowSpacing.screenMargin),
             searchRow.trailingAnchor.constraint(equalTo: headerContainer.trailingAnchor, constant: -FlowSpacing.md),
             searchRow.topAnchor.constraint(equalTo: headerView.bottomAnchor),
-            searchRow.heightAnchor.constraint(equalToConstant: 40.0),
+            searchRow.heightAnchor.constraint(equalToConstant: PlaylistViewController.searchRowHeight),
         ])
         headerContainer.frame = CGRect(
             x: 0,
             y: 0,
             width: tableView.bounds.width,
-            height: PlaylistViewController.headerHeight + 40.0 + FlowSpacing.sm
+            height: PlaylistViewController.headerHeight + PlaylistViewController.searchRowHeight + FlowSpacing.sm
         )
         tableView.tableHeaderView = headerContainer
         tableView.tableFooterView = UIView(frame: .zero)
@@ -215,7 +231,7 @@ final class PlaylistViewController: UIViewController {
             emptyState.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             emptyState.topAnchor.constraint(
                 equalTo: view.topAnchor,
-                constant: PlaylistViewController.headerHeight + 40.0 + FlowSpacing.sm
+                constant: PlaylistViewController.headerHeight + PlaylistViewController.searchRowHeight + FlowSpacing.sm
             ),
             emptyState.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
@@ -307,6 +323,8 @@ final class PlaylistViewController: UIViewController {
 
     /// The height of the cover block above the search field.
     private static let headerHeight: CGFloat = 244.0
+    /// The search field's row. Tall enough for the 44pt sort button beside it.
+    private static let searchRowHeight: CGFloat = 44.0
 
     private func applySort() {
         var result = videos
@@ -629,7 +647,7 @@ extension PlaylistViewController: UITableViewDataSourcePrefetching {
 /// The playlist's cover, title, count and action row.
 final class PlaylistHeaderView: UIView {
 
-    private let artworkView = AsyncImageView()
+    private let artworkView = AsyncImageView(frame: .zero)
     private let titleLabel = UILabel()
     private let subtitleLabel = UILabel()
     private let playButton = FlowButton.make("Play all", style: .filled, icon: .play)
@@ -781,7 +799,7 @@ final class PlaylistSearchBarView: UIView, UITextFieldDelegate {
         translatesAutoresizingMaskIntoConstraints = false
 
         container.translatesAutoresizingMaskIntoConstraints = false
-        container.layer.cornerRadius = FlowShapes.pill(for: 40.0)
+        container.layer.cornerRadius = FlowShapes.pill(for: 44.0)
         container.layer.masksToBounds = true
         addSubview(container)
 
@@ -848,7 +866,7 @@ final class PlaylistVideoCell: UITableViewCell {
     static let reuseIdentifier = "PlaylistVideoCell"
 
     private let positionLabel = UILabel()
-    private let thumbnailView = AsyncImageView()
+    private let thumbnailView = AsyncImageView(frame: .zero)
     private let durationLabel = PaddedLabel()
     private let titleLabel = UILabel()
     private let channelLabel = UILabel()

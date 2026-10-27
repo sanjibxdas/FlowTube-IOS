@@ -574,7 +574,14 @@ final class InnerTubeClient {
         }
         request.httpBody = payload
 
-        perform(request: request, attempt: 1, completion: completion)
+        perform(request: request, attempt: 1) { result in
+            switch result {
+            case .success(let response):
+                completion(.success(response.data))
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
     }
 
     /// Runs a request, retrying transient failures with exponential backoff. A 400 on a request that
@@ -644,7 +651,8 @@ final class InnerTubeClient {
                 return
             }
 
-            if status == 400, request.value(forHTTPHeaderField: "X-Goog-Visitor-Id") != nil {
+            // `value(forHTTPHeaderField:)` is iOS 13; the dictionary form works on 12.
+            if status == 400, request.allHTTPHeaderFields?["X-Goog-Visitor-Id"] != nil {
                 self.dropVisitorDataAndRetry(request: request, completion: completion)
                 return
             }

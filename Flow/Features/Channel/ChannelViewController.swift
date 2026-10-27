@@ -485,8 +485,8 @@ extension ChannelViewController: UICollectionViewDataSourcePrefetching {
 /// The channel's banner, avatar, name, handle, subscriber count and subscribe button.
 final class ChannelHeaderView: UIView {
 
-    private let bannerView = AsyncImageView()
-    private let avatarView = AsyncImageView()
+    private let bannerView = AsyncImageView(frame: .zero)
+    private let avatarView = AsyncImageView(frame: .zero)
     private let nameLabel = UILabel()
     private let detailLabel = UILabel()
     private let subscribeButton = FlowButton.make("Subscribe", style: .filled)
@@ -628,7 +628,7 @@ final class ChannelVideoCell: UICollectionViewCell {
 
     static let reuseIdentifier = "ChannelVideoCell"
 
-    private let thumbnailView = AsyncImageView()
+    private let thumbnailView = AsyncImageView(frame: .zero)
     private let durationLabel = PaddedLabel()
     private let titleLabel = UILabel()
     private let metadataLabel = UILabel()
@@ -772,7 +772,7 @@ final class ChannelPlaylistCell: UICollectionViewCell {
 
     static let reuseIdentifier = "ChannelPlaylistCell"
 
-    private let coverView = AsyncImageView()
+    private let coverView = AsyncImageView(frame: .zero)
     private let countLabel = PaddedLabel()
     private let titleLabel = UILabel()
 

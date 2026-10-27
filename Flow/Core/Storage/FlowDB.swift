@@ -195,7 +195,7 @@ final class FlowDB {
 
     private func migrateLocked() {
         executeRaw("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);")
-        let current = queryRaw("SELECT version FROM schema_version LIMIT 1;").first?.int("version") ?? 0
+        let current = queryLocked("SELECT version FROM schema_version LIMIT 1;", []).first?.int("version") ?? 0
         if current == 0 {
             executeRaw("INSERT INTO schema_version (version) VALUES (0);")
         }

@@ -51,7 +51,14 @@ final class PlaylistsViewController: UIViewController {
     private let collectionView: UICollectionView
     private let layout = UICollectionViewFlowLayout()
     private let emptyState = FlowEmptyState.make(kind: .noPlaylists)
-    private let addButton = FlowIconButton.make(.add, color: .clear, size: 24.0, target: nil, action: nil)
+    /// Built without a target: the action is attached once the owner is loaded, because a
+    /// stored property cannot refer to `self` while the owner is still being initialised.
+    private let addButton: FlowIconButton = {
+        let button = FlowIconButton()
+        button.configure(icon: .add, color: .clear, size: 24.0)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        return button
+    }()
     private let reorderButton = UIBarButtonItem()
 
     // MARK: - State
@@ -314,6 +321,23 @@ final class PlaylistsViewController: UIViewController {
             },
         ]
         LibraryMenu.present(from: self, title: "Playlists", actions: actions)
+    }
+
+    /// The order menu the last chip opens. The chip itself shows the current order, so the sheet
+    /// carries a check against the active one rather than a title that repeats it.
+    private func presentOrderMenu() {
+        let actions: [FlowActionSheetContent.Action] = Order.allCases.map { candidate in
+            FlowActionSheetContent.Action(
+                title: candidate.title,
+                icon: candidate == order ? FlowIcon.check : nil
+            ) { [weak self] in
+                guard let self = self else { return }
+                self.order = candidate
+                self.rebuildFilterChips()
+                self.applyFilters()
+            }
+        }
+        LibraryMenu.present(from: self, title: "Sort playlists", actions: actions)
     }
 
     private func setGrid(_ grid: Bool) {
@@ -590,7 +614,14 @@ final class PlaylistRowCell: UITableViewCell {
     private let coverPlaceholder = FlowIconView()
     private let titleLabel = UILabel()
     private let detailLabel = UILabel()
-    private let moreButton = FlowIconButton.make(.more, color: .clear, size: 20.0, target: nil, action: nil)
+    /// Built without a target: the action is attached once the owner is loaded, because a
+    /// stored property cannot refer to `self` while the owner is still being initialised.
+    private let moreButton: FlowIconButton = {
+        let button = FlowIconButton()
+        button.configure(icon: .more, color: .clear, size: 20.0)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        return button
+    }()
 
     /// Called when the overflow button is tapped.
     var onMore: (() -> Void)?

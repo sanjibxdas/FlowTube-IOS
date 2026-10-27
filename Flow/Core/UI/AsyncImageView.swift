@@ -31,6 +31,13 @@ final class AsyncImageView: UIImageView {
         commonInit()
     }
 
+    /// A no-argument initialiser, so callers can write `AsyncImageView()` rather than spelling out
+    /// an empty frame. `UIImageView`'s other designated initialisers stop Swift from inheriting
+    /// `init()` here, so it has to be declared.
+    convenience init() {
+        self.init(frame: .zero)
+    }
+
     private func commonInit() {
         translatesAutoresizingMaskIntoConstraints = false
         clipsToBounds = true

@@ -242,7 +242,7 @@ final class QueueRowCell: UITableViewCell {
 
     static let reuseIdentifier = "QueueRowCell"
 
-    private let artwork = AsyncImageView()
+    private let artwork = AsyncImageView(frame: .zero)
     private let titleLabel = UILabel()
     private let artistLabel = UILabel()
     private let durationLabel = UILabel()

@@ -15,8 +15,6 @@ final class WatchViewController: UIViewController {
     var onOpenVideo: ((Video) -> Void)?
     /// Called with the channel id the viewer picked.
     var onOpenChannel: ((String) -> Void)?
-    /// Called with the playlist id the viewer picked.
-    var onOpenPlaylist: ((String) -> Void)?
     /// Called when the viewer leaves the watch page.
     var onClose: (() -> Void)?
 
@@ -61,6 +59,8 @@ final class WatchViewController: UIViewController {
     private var isPlayerFullscreen = false
     /// A tap target over the shrunken player, so a tap expands it instead of reaching the controls.
     private let collapsedTapTarget = UIControl()
+    /// Watches the player's full-screen flag while the page is on screen.
+    private var fullscreenPollTimer: Timer?
 
     /// How far the page scrolls before the player shrinks, and how far back it must come before it
     /// grows again. The gap keeps the pin from flickering at the threshold.
@@ -78,18 +78,6 @@ final class WatchViewController: UIViewController {
         case comments
         case relatedHeader
         case related(Video)
-
-        var id: String {
-            switch self {
-            case .info: return "info"
-            case .channel: return "channel"
-            case .actions: return "actions"
-            case .description: return "description"
-            case .comments: return "comments"
-            case .relatedHeader: return "relatedHeader"
-            case .related(let video): return "related:" + video.id
-            }
-        }
     }
 
     // MARK: - Construction
@@ -113,6 +101,7 @@ final class WatchViewController: UIViewController {
     }
 
     deinit {
+        fullscreenPollTimer?.invalidate()
         themeToken?.cancelObservation()
         bag.cancelAll()
     }
@@ -159,10 +148,6 @@ final class WatchViewController: UIViewController {
         navigationController?.setNavigationBarHidden(false, animated: animated)
     }
 
-    override var preferredStatusBarStyle: UIStatusBarStyle {
-        return .lightContent
-    }
-
     /// The player draws the status bar's colour and hides it with its chrome, so the page asks the
     /// child rather than answering for it.
     override var childForStatusBarStyle: UIViewController? {
@@ -203,6 +188,36 @@ final class WatchViewController: UIViewController {
         reconcilePlayerPresentation()
     }
 
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        startFullscreenPolling()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        stopFullscreenPolling()
+    }
+
+    // MARK: - Full-screen observation
+
+    /// The player toggles full screen from its own chrome and tells nobody, and the layout pass
+    /// that usually follows a rotation is not guaranteed — a viewer with orientation lock on can
+    /// press the button and stay upright. The page therefore watches the flag while it is on
+    /// screen, at a cadence slow enough to cost nothing and fast enough to feel immediate.
+    private func startFullscreenPolling() {
+        stopFullscreenPolling()
+        let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
+            self?.reconcilePlayerPresentation()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        fullscreenPollTimer = timer
+    }
+
+    private func stopFullscreenPolling() {
+        fullscreenPollTimer?.invalidate()
+        fullscreenPollTimer = nil
+    }
+
     // MARK: - Build
 
     private func buildPlayer() {
@@ -216,7 +231,6 @@ final class WatchViewController: UIViewController {
         playerErrorLabel.textAlignment = .center
         playerErrorLabel.numberOfLines = 4
         playerErrorLabel.isHidden = true
-        playerContainer.addSubview(playerErrorLabel)
 
         let controller = VideoPlayerViewController(videoId: videoId, service: service)
         controller.onBack = { [weak self] in self?.handleBack() }
@@ -226,6 +240,9 @@ final class WatchViewController: UIViewController {
         playerContainer.addSubview(controller.view)
         controller.didMove(toParent: self)
         playerController = controller
+
+        // Above the player, so an unplayable video's reason is not covered by the black surface.
+        playerContainer.addSubview(playerErrorLabel)
 
         // The player's own back button leaves the page; the page's collapse gesture and full
         // screen are the player's, so the shell only watches the size it should be.
@@ -354,7 +371,9 @@ final class WatchViewController: UIViewController {
             return
         }
         NSLayoutConstraint.deactivate(fullscreenPlayerConstraints)
-        tableView.isHidden = false
+        // Not simply `false`: a page that failed to load keeps its error state instead of
+        // uncovering the empty table underneath it.
+        updateEmptyState()
         collapsedTapTarget.isHidden = !isPlayerCollapsed
         reconcilePlayerPresentation()
         setNeedsStatusBarAppearanceUpdate()
@@ -404,6 +423,10 @@ final class WatchViewController: UIViewController {
         loadToken += 1
         let token = loadToken
         errorState.isHidden = true
+        // A retry starts clean: the previous attempt's preview belongs to a page that never loaded.
+        commentPreview = nil
+        commentTotalText = nil
+        isLoadingCommentPreview = false
         spinner.startAnimating()
 
         WatchPageService.shared.load(videoId: videoId) { [weak self] result in
@@ -475,16 +498,23 @@ final class WatchViewController: UIViewController {
     }
 
     private func showError(_ error: FlowError) {
+        rows = []
+        tableView.reloadData()
+        tableView.isHidden = true
         errorState.isHidden = false
         errorState.configure(
             kind: .custom(icon: .wifi, title: "Couldn't load this video", message: error.displayMessage),
             actionTitle: "Retry"
         )
+        errorState.applyTheme()
     }
 
+    /// The table is shown only when it has rows to show and the page is not in its error state.
+    /// While the first load is in flight the table stays visible but empty, so the spinner has a
+    /// background and the player is not the only thing on screen.
     private func updateEmptyState() {
         let empty = rows.isEmpty && !isLoading
-        tableView.isHidden = empty
+        tableView.isHidden = empty || !errorState.isHidden
     }
 
     private func rebuildRows() {
@@ -541,7 +571,7 @@ final class WatchViewController: UIViewController {
             return
         }
         let controller = WatchViewController(videoId: video.id, api: api, service: service)
-        navigationController?.pushViewController(controller, animated: true)
+        push(controller)
     }
 
     private func openChannel(_ channelId: String) {
@@ -550,8 +580,18 @@ final class WatchViewController: UIViewController {
             handler(channelId)
             return
         }
-        let controller = ChannelViewController(channelId: channelId, api: api)
-        navigationController?.pushViewController(controller, animated: true)
+        push(ChannelViewController(channelId: channelId, api: api))
+    }
+
+    /// Pushes onto the page's own stack, or — when the page was presented on its own, which is how
+    /// the router opens a watch link — onto a stack of its own so the destination still has a back
+    /// button.
+    private func push(_ controller: UIViewController) {
+        if let navigation = navigationController {
+            navigation.pushViewController(controller, animated: true)
+            return
+        }
+        Router.shared.push(controller, from: self)
     }
 
     private func openComments() {
@@ -565,14 +605,11 @@ final class WatchViewController: UIViewController {
             self?.openChannel(channelId)
         }
         controller.onSeek = { [weak self] seconds in
-            guard let self = self else { return }
-            self.service.seek(to: seconds)
-            self.service.play()
+            self?.seek(to: seconds)
         }
-        controller.onClose = { [weak self] in
-            self?.navigationController?.popViewController(animated: true)
-        }
-        navigationController?.pushViewController(controller, animated: true)
+        // `onClose` is left unset: the comments screen pops its own stack, or dismisses the stack
+        // the router wrapped it in, which covers both ways this page can be reached.
+        push(controller)
     }
 
     private func toggleDescription() {
@@ -584,17 +621,35 @@ final class WatchViewController: UIViewController {
         tableView.reloadRows(at: [IndexPath(row: index, section: 0)], with: .automatic)
     }
 
+    /// Brings the description into view, opening it first: the title's "Show more" promises the
+    /// full text, not just the collapsed card.
     private func scrollToDescription() {
         guard let index = rows.firstIndex(where: { row in
             if case .description = row { return true }
             return false
         }) else { return }
+        if !isDescriptionExpanded {
+            isDescriptionExpanded = true
+            tableView.reloadRows(at: [IndexPath(row: index, section: 0)], with: .none)
+        }
         tableView.scrollToRow(at: IndexPath(row: index, section: 0), at: .top, animated: true)
     }
 
     private func seek(to seconds: TimeInterval) {
         service.seek(to: seconds)
         service.play()
+    }
+
+    /// Opens a link the description printed.
+    ///
+    /// A YouTube link is routed inside the app so the viewer stays in Flow; anything else is handed
+    /// to the system, which is the only thing that can show a web page.
+    private func openLink(_ url: URL) {
+        if let route = DeepLink.parse(url) {
+            Router.shared.open(route)
+            return
+        }
+        UIApplication.shared.open(url, options: [:], completionHandler: nil)
     }
 
     private func share() {
@@ -776,20 +831,24 @@ extension WatchViewController: UITableViewDataSource {
                     isUpcoming: model.page.isUpcoming,
                     membersOnly: model.page.video.membersOnlyText
                 )
+                infoCell.onOpenDescription = { [weak self] in self?.scrollToDescription() }
             }
             return cell
 
         case .channel:
             let cell = tableView.dequeueReusableCell(withIdentifier: WatchChannelCell.reuseIdentifier, for: indexPath)
             if let channelCell = cell as? WatchChannelCell, let video = video {
-                // The watch page's `next` response carries the owner's subscriber line, but
-                // `WatchPage` keeps only the video from it, so the row shows the name alone rather
-                // than a figure the page does not have.
+                // `WatchPage` keeps only the video from the owner block, so the subscriber line
+                // comes from the local subscription when there is one. Without it the row shows
+                // the name alone rather than a figure the page does not have.
+                let subscribed = SubscriptionStore.shared.subscription(for: video.channelId)
+                let subscriberText = subscribed.map { Formatters.subscriberCount($0.subscriberCount) } ?? ""
                 let channel = Channel(
                     id: video.channelId,
                     name: video.channelName,
                     thumbnailUrl: video.channelThumbnailUrl,
-                    subscriberCountText: ""
+                    subscriberCount: Int64(subscribed?.subscriberCount ?? 0),
+                    subscriberCountText: subscriberText
                 )
                 channelCell.configure(
                     channel: channel,
@@ -830,6 +889,8 @@ extension WatchViewController: UITableViewDataSource {
                 )
                 descriptionCell.onToggle = { [weak self] in self?.toggleDescription() }
                 descriptionCell.onChapter = { [weak self] chapter in self?.seek(to: chapter.startTime) }
+                descriptionCell.onSeek = { [weak self] seconds in self?.seek(to: seconds) }
+                descriptionCell.onLink = { [weak self] url in self?.openLink(url) }
             }
             return cell
 
@@ -976,14 +1037,22 @@ enum WatchReactions {
 
 // MARK: - Info cell
 
-/// The video's title and its "1.2M views · 3 weeks ago" line.
+/// The video's title, its "1.2M views · 3 weeks ago" line and, as on Android, the "…more" that
+/// opens the description. The whole block is one target, which is what the affordance promises.
 final class WatchInfoCell: UITableViewCell {
 
     static let reuseIdentifier = "WatchInfoCell"
 
+    /// Called when the title, the counts or "Show more" is tapped.
+    var onOpenDescription: (() -> Void)?
+
     private let titleLabel = UILabel()
     private let metaLabel = UILabel()
+    private let moreButton = UIButton(type: .system)
     private let badgeLabel = PaddedLabel()
+    private let badgeRow = UIStackView()
+    private let metaRow = UIStackView()
+    private let stack = UIStackView()
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -1000,37 +1069,61 @@ final class WatchInfoCell: UITableViewCell {
         backgroundColor = .clear
         contentView.backgroundColor = .clear
 
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = FlowTypography.titleLarge
+        titleLabel.font = FlowTypography.titleLargeEmphasized
         titleLabel.numberOfLines = 3
-        contentView.addSubview(titleLabel)
 
-        metaLabel.translatesAutoresizingMaskIntoConstraints = false
-        metaLabel.font = FlowTypography.bodySmall
-        metaLabel.numberOfLines = 1
-        contentView.addSubview(metaLabel)
-
-        badgeLabel.translatesAutoresizingMaskIntoConstraints = false
         badgeLabel.font = FlowTypography.labelSmall
         badgeLabel.textInsets = UIEdgeInsets(top: 2, left: 6, bottom: 2, right: 6)
         badgeLabel.layer.cornerRadius = 4.0
         badgeLabel.layer.masksToBounds = true
-        badgeLabel.isHidden = true
-        contentView.addSubview(badgeLabel)
+        badgeLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        let badgeSpacer = UIView()
+        badgeSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        badgeRow.axis = .horizontal
+        badgeRow.alignment = .center
+        badgeRow.addArrangedSubview(badgeLabel)
+        badgeRow.addArrangedSubview(badgeSpacer)
+
+        metaLabel.font = FlowTypography.bodySmall
+        metaLabel.numberOfLines = 1
+        metaLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        moreButton.titleLabel?.font = FlowTypography.bodySmallEmphasized
+        moreButton.contentHorizontalAlignment = .left
+        moreButton.setContentHuggingPriority(.required, for: .horizontal)
+        moreButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        moreButton.addTarget(self, action: #selector(handleOpenDescription), for: .touchUpInside)
+        // Android's wording for this affordance, which sits beside the counts rather than below.
+        moreButton.setTitle("…more", for: .normal)
+
+        metaRow.axis = .horizontal
+        metaRow.spacing = FlowSpacing.xs
+        metaRow.alignment = .center
+        metaRow.addArrangedSubview(metaLabel)
+        metaRow.addArrangedSubview(moreButton)
+
+        stack.axis = .vertical
+        stack.alignment = .fill
+        stack.spacing = FlowSpacing.xs
+        stack.addArrangedSubview(titleLabel)
+        stack.addArrangedSubview(badgeRow)
+        stack.addArrangedSubview(metaRow)
+        contentView.addSubviewForAutoLayout(stack)
+
+        // The title and the counts open the description, as they do on Android. "Show more" is a
+        // button of its own, so it needs no gesture of its own to reach the same handler.
+        titleLabel.isUserInteractionEnabled = true
+        titleLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleOpenDescription)))
+        metaLabel.isUserInteractionEnabled = true
+        metaLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleOpenDescription)))
 
         NSLayoutConstraint.activate([
-            titleLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: FlowSpacing.screenMargin),
-            titleLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -FlowSpacing.screenMargin),
-            titleLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: FlowSpacing.md),
-
-            badgeLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-            badgeLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: FlowSpacing.xs),
+            stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: FlowSpacing.screenMargin),
+            stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -FlowSpacing.screenMargin),
+            stack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: FlowSpacing.md),
+            stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -FlowSpacing.sm),
             badgeLabel.heightAnchor.constraint(equalToConstant: 18.0),
-
-            metaLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-            metaLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
-            metaLabel.topAnchor.constraint(equalTo: badgeLabel.bottomAnchor, constant: FlowSpacing.xs),
-            metaLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -FlowSpacing.sm),
         ])
         applyTheme()
     }
@@ -1055,12 +1148,13 @@ final class WatchInfoCell: UITableViewCell {
 
         if let membersOnly = membersOnly, !membersOnly.isEmpty {
             badgeLabel.text = membersOnly
-            badgeLabel.isHidden = false
+            badgeRow.isHidden = false
         } else if isUpcoming {
             badgeLabel.text = "Upcoming"
-            badgeLabel.isHidden = false
+            badgeRow.isHidden = false
         } else {
-            badgeLabel.isHidden = true
+            badgeLabel.text = nil
+            badgeRow.isHidden = true
         }
         applyTheme()
     }
@@ -1069,8 +1163,13 @@ final class WatchInfoCell: UITableViewCell {
         let scheme = FlowTheme.shared.scheme
         titleLabel.textColor = scheme.onSurface
         metaLabel.textColor = scheme.onSurfaceVariant
+        moreButton.setTitleColor(scheme.onSurface, for: .normal)
         badgeLabel.textColor = scheme.onSecondaryContainer
         badgeLabel.backgroundColor = scheme.secondaryContainer
+    }
+
+    @objc private func handleOpenDescription() {
+        onOpenDescription?()
     }
 }
 
@@ -1086,7 +1185,7 @@ final class WatchChannelCell: UITableViewCell {
     /// Called when the subscribe button is tapped.
     var onToggleSubscription: (() -> Void)?
 
-    private let avatarView = AsyncImageView()
+    private let avatarView = AsyncImageView(frame: .zero)
     private let nameLabel = UILabel()
     private let detailLabel = UILabel()
     private let subscribeButton = FlowButton.make("Subscribe", style: .filled)
@@ -1145,7 +1244,9 @@ final class WatchChannelCell: UITableViewCell {
 
             subscribeButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -FlowSpacing.screenMargin),
             subscribeButton.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
-            subscribeButton.heightAnchor.constraint(equalToConstant: 36.0),
+            // `FlowButton` floors itself at 40 points, so the row asks for that rather than a
+            // height the button would break.
+            subscribeButton.heightAnchor.constraint(equalToConstant: 40.0),
         ])
         applyTheme()
     }
@@ -1154,10 +1255,13 @@ final class WatchChannelCell: UITableViewCell {
     func configure(channel: Channel, isSubscribed: Bool) {
         avatarView.setImage(url: channel.thumbnailUrl)
         nameLabel.text = channel.name
-        detailLabel.text = channel.subscriberCountText.isEmpty
-            ? (channel.handle.isEmpty ? "" : channel.handle)
-            : channel.subscriberCountText
+        let detail = channel.subscriberCountText.isEmpty ? channel.handle : channel.subscriberCountText
+        detailLabel.text = detail
+        // The watch page's response often carries no subscriber line, and an empty label would
+        // still take a line's height under the name.
+        detailLabel.isHidden = detail.isEmpty
         setSubscribed(isSubscribed)
+        accessibilityLabel = [channel.name, detail].filter { !$0.isEmpty }.joined(separator: ", ")
         applyTheme()
     }
 
@@ -1267,10 +1371,17 @@ final class WatchActionsCell: UITableViewCell {
         isSaved: Bool,
         isDownloaded: Bool
     ) {
-        likeButton.setTitle(likeCount > 0 ? Formatters.compactCount(Int(min(likeCount, Int64(Int.max)))) : "Like")
-        likeButton.setIcon(.liked, tint: isLiked ? FlowTheme.shared.scheme.primary : nil)
+        // Android's wording: the count when there is one, otherwise "Liked" or "Like".
+        if likeCount > 0 {
+            likeButton.setTitle(Formatters.compactCount(Int(min(likeCount, Int64(Int.max)))))
+        } else {
+            likeButton.setTitle(isLiked ? "Liked" : "Like")
+        }
+        likeButton.setIcon(isLiked ? .liked : .heart, tint: isLiked ? FlowTheme.shared.scheme.primary : nil)
         likeButton.setSelected(isLiked)
 
+        // The dislike count is Return YouTube Dislike's, and it is shown only when the service knows
+        // the video — a zero there means "unknown", not "nobody disliked it".
         dislikeButton.setTitle(dislikeCount > 0 ? Formatters.compactCount(Int(min(dislikeCount, Int64(Int.max)))) : "Dislike")
         dislikeButton.setIcon(.dislike, tint: isDisliked ? FlowTheme.shared.scheme.primary : nil)
         dislikeButton.setSelected(isDisliked)
@@ -1414,11 +1525,29 @@ final class WatchDescriptionCell: UITableViewCell {
     var onToggle: (() -> Void)?
     /// Called when the viewer taps a chapter.
     var onChapter: ((Chapter) -> Void)?
+    /// Called when the viewer taps a link or a timestamp in the description.
+    var onLink: ((URL) -> Void)?
+    /// Called with a timestamp the description mentions, in seconds.
+    var onSeek: ((TimeInterval) -> Void)?
 
     private let card = FlowCard.make(elevation: .low)
-    private let textLabel = UILabel()
+    private let textView = UITextView()
     private let toggleButton = UIButton(type: .custom)
     private let chaptersStack = UIStackView()
+    private let chaptersHeader = UILabel()
+
+    /// The description as last configured, so a theme change can rebuild its marked-up text.
+    private var descriptionText = ""
+    private var isDescriptionExpanded = false
+
+    /// The card ends under the chapters when they are shown, and under the toggle when they are
+    /// not. Both constraints exist and the one that does not apply is switched off, because a
+    /// hidden view keeps its intrinsic size and would otherwise leave a gap in the card.
+    private var chaptersBottom: NSLayoutConstraint!
+    private var collapsedBottom: NSLayoutConstraint!
+    private var textBottom: NSLayoutConstraint!
+    private var toggleHeight: NSLayoutConstraint!
+    private var chaptersTop: NSLayoutConstraint!
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -1438,10 +1567,25 @@ final class WatchDescriptionCell: UITableViewCell {
         card.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(card)
 
-        textLabel.translatesAutoresizingMaskIntoConstraints = false
-        textLabel.font = FlowTypography.bodyMedium
-        textLabel.numberOfLines = 4
-        card.contentView.addSubview(textLabel)
+        // A text view rather than a label: the description carries links and timestamps, and only
+        // a text view can tell which one was tapped. It is made to look exactly like a label —
+        // no scrolling, no padding, no selection — so the card still reads as text.
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isScrollEnabled = false
+        textView.backgroundColor = .clear
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0.0
+        textView.dataDetectorTypes = []
+        textView.delegate = self
+        // An empty dictionary keeps the tint already set on the text: the default link styling
+        // would paint every timestamp system blue and underline it.
+        textView.linkTextAttributes = [:]
+        // With scrolling off the view's height is its text's height, which is what the cell needs
+        // to size itself; the priority keeps Auto Layout from compressing it instead.
+        textView.setContentCompressionResistancePriority(.required, for: .vertical)
+        card.contentView.addSubview(textView)
 
         toggleButton.translatesAutoresizingMaskIntoConstraints = false
         toggleButton.titleLabel?.font = FlowTypography.labelMediumEmphasized
@@ -1449,10 +1593,24 @@ final class WatchDescriptionCell: UITableViewCell {
         toggleButton.addTarget(self, action: #selector(handleToggle), for: .touchUpInside)
         card.contentView.addSubview(toggleButton)
 
+        chaptersHeader.translatesAutoresizingMaskIntoConstraints = false
+        chaptersHeader.font = FlowTypography.titleSmallEmphasized
+        chaptersHeader.text = "Chapters"
+        card.contentView.addSubview(chaptersHeader)
+
         chaptersStack.axis = .vertical
         chaptersStack.spacing = FlowSpacing.xxs
         chaptersStack.translatesAutoresizingMaskIntoConstraints = false
         card.contentView.addSubview(chaptersStack)
+
+        toggleHeight = toggleButton.heightAnchor.constraint(equalToConstant: 24.0)
+        chaptersTop = chaptersHeader.topAnchor.constraint(
+            equalTo: toggleButton.bottomAnchor,
+            constant: FlowSpacing.md
+        )
+        chaptersBottom = chaptersStack.bottomAnchor.constraint(equalTo: card.contentView.bottomAnchor)
+        collapsedBottom = toggleButton.bottomAnchor.constraint(equalTo: card.contentView.bottomAnchor)
+        textBottom = textView.bottomAnchor.constraint(equalTo: card.contentView.bottomAnchor)
 
         NSLayoutConstraint.activate([
             card.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: FlowSpacing.screenMargin),
@@ -1460,57 +1618,170 @@ final class WatchDescriptionCell: UITableViewCell {
             card.topAnchor.constraint(equalTo: contentView.topAnchor, constant: FlowSpacing.xs),
             card.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -FlowSpacing.xs),
 
-            textLabel.leadingAnchor.constraint(equalTo: card.contentView.leadingAnchor),
-            textLabel.trailingAnchor.constraint(equalTo: card.contentView.trailingAnchor),
-            textLabel.topAnchor.constraint(equalTo: card.contentView.topAnchor),
+            textView.leadingAnchor.constraint(equalTo: card.contentView.leadingAnchor),
+            textView.trailingAnchor.constraint(equalTo: card.contentView.trailingAnchor),
+            textView.topAnchor.constraint(equalTo: card.contentView.topAnchor),
 
-            toggleButton.leadingAnchor.constraint(equalTo: textLabel.leadingAnchor),
+            toggleButton.leadingAnchor.constraint(equalTo: textView.leadingAnchor),
             toggleButton.trailingAnchor.constraint(lessThanOrEqualTo: card.contentView.trailingAnchor),
-            toggleButton.topAnchor.constraint(equalTo: textLabel.bottomAnchor, constant: FlowSpacing.xs),
-            toggleButton.heightAnchor.constraint(equalToConstant: 24.0),
+            toggleButton.topAnchor.constraint(equalTo: textView.bottomAnchor, constant: FlowSpacing.xs),
+            toggleHeight,
 
-            chaptersStack.leadingAnchor.constraint(equalTo: textLabel.leadingAnchor),
-            chaptersStack.trailingAnchor.constraint(equalTo: textLabel.trailingAnchor),
-            chaptersStack.topAnchor.constraint(equalTo: toggleButton.bottomAnchor, constant: FlowSpacing.xs),
-            chaptersStack.bottomAnchor.constraint(equalTo: card.contentView.bottomAnchor),
+            chaptersHeader.leadingAnchor.constraint(equalTo: textView.leadingAnchor),
+            chaptersHeader.trailingAnchor.constraint(equalTo: textView.trailingAnchor),
+
+            chaptersStack.leadingAnchor.constraint(equalTo: textView.leadingAnchor),
+            chaptersStack.trailingAnchor.constraint(equalTo: textView.trailingAnchor),
+            chaptersStack.topAnchor.constraint(equalTo: chaptersHeader.bottomAnchor, constant: FlowSpacing.xs),
         ])
         applyTheme()
     }
 
     /// Fills the cell.
     func configure(description: String, chapters: [Chapter], isExpanded: Bool) {
-        textLabel.text = description.isEmpty ? "No description" : description
-        textLabel.numberOfLines = isExpanded ? 0 : 4
+        descriptionText = description.isEmpty ? "No description" : description
+        isDescriptionExpanded = isExpanded
+        textView.attributedText = WatchDescriptionCell.attributedDescription(descriptionText)
+        // The text container is what truncates: a text view has no `numberOfLines`, but its
+        // container does, and with scrolling off the cell sizes itself to what is shown.
+        textView.textContainer.maximumNumberOfLines = isExpanded ? 0 : 4
+        textView.textContainer.lineBreakMode = isExpanded ? .byWordWrapping : .byTruncatingTail
+
         toggleButton.setTitle(isExpanded ? "Show less" : "Show more", for: .normal)
-        toggleButton.isHidden = description.isEmpty && chapters.isEmpty
+        let showsToggle = !(description.isEmpty && chapters.isEmpty)
+        toggleButton.isHidden = !showsToggle
 
         for view in chaptersStack.arrangedSubviews {
             chaptersStack.removeArrangedSubview(view)
             view.removeFromSuperview()
         }
-        chaptersStack.isHidden = !isExpanded || chapters.isEmpty
-        guard isExpanded else {
-            applyTheme()
-            return
+        let showsChapters = isExpanded && !chapters.isEmpty
+        chaptersHeader.isHidden = !showsChapters
+        chaptersStack.isHidden = !showsChapters
+        if showsChapters {
+            for chapter in chapters {
+                let button = ChapterRowButton()
+                button.configure(chapter: chapter)
+                button.onTap = { [weak self] in self?.onChapter?(chapter) }
+                chaptersStack.addArrangedSubview(button)
+            }
         }
-        for chapter in chapters {
-            let button = ChapterRowButton()
-            button.configure(chapter: chapter)
-            button.onTap = { [weak self] in self?.onChapter?(chapter) }
-            chaptersStack.addArrangedSubview(button)
-        }
+        updateBottomConstraints(showsToggle: showsToggle, showsChapters: showsChapters)
         applyTheme()
+    }
+
+    /// Makes the card end under whichever of the chapters, the toggle or the text is last.
+    ///
+    /// The header keeps its position below the toggle in every state — the toggle is collapsed to
+    /// zero height rather than removed — so the chapters never float free of the card.
+    private func updateBottomConstraints(showsToggle: Bool, showsChapters: Bool) {
+        chaptersTop.isActive = true
+        chaptersBottom.isActive = showsChapters
+        collapsedBottom.isActive = !showsChapters && showsToggle
+        textBottom.isActive = !showsChapters && !showsToggle
+        toggleHeight.constant = showsToggle ? 24.0 : 0.0
     }
 
     private func applyTheme() {
         let scheme = FlowTheme.shared.scheme
-        textLabel.textColor = scheme.onSurfaceVariant
         toggleButton.setTitleColor(scheme.onSurface, for: .normal)
+        chaptersHeader.textColor = scheme.onSurface
         card.applyTheme()
+        // The marked-up text carries the palette's colours, so it is rebuilt rather than repainted.
+        if !descriptionText.isEmpty {
+            textView.attributedText = WatchDescriptionCell.attributedDescription(descriptionText)
+            textView.textContainer.maximumNumberOfLines = isDescriptionExpanded ? 0 : 4
+            textView.textContainer.lineBreakMode = isDescriptionExpanded ? .byWordWrapping : .byTruncatingTail
+        }
+    }
+
+    /// Builds the description's attributed text: the body, with the timestamps and links tinted.
+    ///
+    /// A timestamp carries a `flow-seek://` URL of its own so the delegate can tell it from a real
+    /// link; a link carries itself, so tapping it opens exactly what the description printed. Each
+    /// match is marked where it was found rather than by searching for its text again, so the same
+    /// timestamp printed twice gets both of its occurrences marked.
+    static func attributedDescription(_ text: String) -> NSAttributedString {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byWordWrapping
+        let result = NSMutableAttributedString(string: text, attributes: [
+            .font: FlowTypography.bodyMedium,
+            .foregroundColor: FlowTheme.shared.scheme.onSurfaceVariant,
+            .paragraphStyle: paragraph,
+        ])
+        let primary = FlowTheme.shared.scheme.primary
+
+        for match in matches(of: WatchDescriptionCell.timestampPattern, in: text) {
+            guard let stamp = Range(match.range, in: text).map({ String(text[$0]) }),
+                  let seconds = firstTimestamp(in: stamp) else { continue }
+            result.addAttributes([
+                .link: "flow-seek://" + String(Int(seconds)),
+                .foregroundColor: primary,
+            ], range: match.range)
+        }
+        for match in matches(of: WatchDescriptionCell.linkPattern, in: text) {
+            guard let swiftRange = Range(match.range, in: text) else { continue }
+            var url = String(text[swiftRange])
+            while let last = url.last, ".,;:!?)]".contains(last) {
+                url.removeLast()
+            }
+            guard !url.isEmpty, let target = URL(string: url) else { continue }
+            // The trailing punctuation trimmed above is left outside the marked span.
+            let length = (url as NSString).length
+            result.addAttributes([
+                .link: target,
+                .foregroundColor: primary,
+            ], range: NSRange(location: match.range.location, length: min(length, match.range.length)))
+        }
+        return result
+    }
+
+    /// The `m:ss` / `h:mm:ss` pattern. The look-behind and look-ahead keep a clock time inside a
+    /// longer number — "1:234" or "10:30:45:00" — from being read as one.
+    static let timestampPattern = "(?<![0-9:])([0-9]{1,2}):([0-5][0-9])(?::([0-5][0-9]))?(?![0-9:])"
+    /// The URL pattern. Quotes and angle brackets end a URL, so a link inside markup is still one.
+    static let linkPattern = "https?://[^\\s<>\"']+"
+
+    private static func matches(of pattern: String, in text: String) -> [NSTextCheckingResult] {
+        guard let expression = try? NSRegularExpression(pattern: pattern, options: []) else { return [] }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return expression.matches(in: text, options: [], range: range)
+    }
+
+    /// The seconds a `m:ss` / `h:mm:ss` string names.
+    static func firstTimestamp(in stamp: String) -> TimeInterval? {
+        let parts = stamp.split(separator: ":").compactMap { Int($0) }
+        guard parts.count == 2 || parts.count == 3 else { return nil }
+        if parts.count == 3 {
+            return TimeInterval(parts[0] * 3_600 + parts[1] * 60 + parts[2])
+        }
+        return TimeInterval(parts[0] * 60 + parts[1])
     }
 
     @objc private func handleToggle() {
         onToggle?()
+    }
+}
+
+extension WatchDescriptionCell: UITextViewDelegate {
+
+    /// Called when a marked span is tapped. Returning `false` keeps the app from handing the URL
+    /// to Safari, which it must: a `flow-seek:` URL is not something the system can open.
+    func textView(
+        _ textView: UITextView,
+        shouldInteractWith URL: URL,
+        in characterRange: NSRange,
+        interaction: UITextItemInteraction
+    ) -> Bool {
+        if URL.scheme == "flow-seek" {
+            // `flow-seek://123` puts the seconds in the host.
+            if let seconds = TimeInterval(URL.host ?? "") {
+                onSeek?(seconds)
+            }
+            return false
+        }
+        onLink?(URL)
+        return false
     }
 }
 
@@ -1604,9 +1875,17 @@ final class WatchCommentsPreviewCell: UITableViewCell {
 
     private let card = FlowCard.make(elevation: .low)
     private let titleLabel = UILabel()
+    private let avatarView = AsyncImageView(frame: .zero)
     private let authorLabel = UILabel()
     private let bodyLabel = UILabel()
     private let chevronView = FlowIconView()
+
+    /// The body hangs off the author line when there is a comment, and off the heading when the
+    /// card is showing the "Add a comment..." placeholder.
+    private var bodyTopToAuthor: NSLayoutConstraint!
+    private var bodyTopToTitle: NSLayoutConstraint!
+    private var bodyLeadingToAuthor: NSLayoutConstraint!
+    private var bodyLeadingToTitle: NSLayoutConstraint!
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -1637,14 +1916,31 @@ final class WatchCommentsPreviewCell: UITableViewCell {
         chevronView.iconSize = 18.0
         card.contentView.addSubview(chevronView)
 
+        avatarView.translatesAutoresizingMaskIntoConstraints = false
+        avatarView.contentMode = .scaleAspectFill
+        avatarView.clipsToBounds = true
+        avatarView.applyCornerRadius(12.0)
+        card.contentView.addSubview(avatarView)
+
         authorLabel.translatesAutoresizingMaskIntoConstraints = false
         authorLabel.font = FlowTypography.labelMedium
         card.contentView.addSubview(authorLabel)
 
         bodyLabel.translatesAutoresizingMaskIntoConstraints = false
-        bodyLabel.font = FlowTypography.bodyMedium
+        bodyLabel.font = FlowTypography.bodySmall
         bodyLabel.numberOfLines = 2
         card.contentView.addSubview(bodyLabel)
+
+        bodyTopToAuthor = bodyLabel.topAnchor.constraint(
+            equalTo: authorLabel.bottomAnchor,
+            constant: FlowSpacing.xxs
+        )
+        bodyTopToTitle = bodyLabel.topAnchor.constraint(
+            equalTo: titleLabel.bottomAnchor,
+            constant: FlowSpacing.md
+        )
+        bodyLeadingToAuthor = bodyLabel.leadingAnchor.constraint(equalTo: authorLabel.leadingAnchor)
+        bodyLeadingToTitle = bodyLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor)
 
         NSLayoutConstraint.activate([
             card.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: FlowSpacing.screenMargin),
@@ -1661,13 +1957,19 @@ final class WatchCommentsPreviewCell: UITableViewCell {
             chevronView.widthAnchor.constraint(equalToConstant: 18.0),
             chevronView.heightAnchor.constraint(equalToConstant: 18.0),
 
-            authorLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-            authorLabel.trailingAnchor.constraint(equalTo: card.contentView.trailingAnchor),
-            authorLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: FlowSpacing.md),
+            avatarView.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            avatarView.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: FlowSpacing.lg),
+            avatarView.widthAnchor.constraint(equalToConstant: 24.0),
+            avatarView.heightAnchor.constraint(equalToConstant: 24.0),
+            avatarView.bottomAnchor.constraint(lessThanOrEqualTo: card.contentView.bottomAnchor),
 
-            bodyLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            authorLabel.leadingAnchor.constraint(equalTo: avatarView.trailingAnchor, constant: FlowSpacing.lg),
+            authorLabel.trailingAnchor.constraint(equalTo: card.contentView.trailingAnchor),
+            authorLabel.topAnchor.constraint(equalTo: avatarView.topAnchor),
+
+            bodyLeadingToAuthor,
             bodyLabel.trailingAnchor.constraint(equalTo: card.contentView.trailingAnchor),
-            bodyLabel.topAnchor.constraint(equalTo: authorLabel.bottomAnchor, constant: FlowSpacing.xxs),
+            bodyTopToAuthor,
             bodyLabel.bottomAnchor.constraint(equalTo: card.contentView.bottomAnchor),
         ])
         applyTheme()
@@ -1682,14 +1984,26 @@ final class WatchCommentsPreviewCell: UITableViewCell {
         }
 
         if let preview = preview {
+            avatarView.setImage(url: preview.authorThumbnail)
+            avatarView.isHidden = false
             authorLabel.text = CommentsViewController.displayAuthor(preview.author)
             authorLabel.isHidden = false
             bodyLabel.text = preview.text
-            bodyLabel.isHidden = false
+            bodyTopToTitle.isActive = false
+            bodyLeadingToTitle.isActive = false
+            bodyLeadingToAuthor.isActive = true
+            bodyTopToAuthor.isActive = true
         } else {
+            avatarView.clearImage()
+            avatarView.isHidden = true
+            authorLabel.text = nil
             authorLabel.isHidden = true
             bodyLabel.text = "Add a comment..."
-            bodyLabel.isHidden = false
+            // With no author line the body hangs off the heading, as Android's placeholder does.
+            bodyTopToAuthor.isActive = false
+            bodyLeadingToAuthor.isActive = false
+            bodyLeadingToTitle.isActive = true
+            bodyTopToTitle.isActive = true
         }
         applyTheme()
     }
@@ -1700,6 +2014,7 @@ final class WatchCommentsPreviewCell: UITableViewCell {
         authorLabel.textColor = scheme.onSurfaceVariant
         bodyLabel.textColor = scheme.onSurface
         chevronView.iconColor = scheme.onSurfaceVariant
+        avatarView.placeholderColor = scheme.surfaceVariant
         card.applyTheme()
     }
 
@@ -1764,7 +2079,7 @@ final class WatchRelatedCell: UITableViewCell {
 
     static let reuseIdentifier = "WatchRelatedCell"
 
-    private let thumbnailView = AsyncImageView()
+    private let thumbnailView = AsyncImageView(frame: .zero)
     private let durationLabel = PaddedLabel()
     private let titleLabel = UILabel()
     private let detailLabel = UILabel()

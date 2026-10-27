@@ -76,7 +76,7 @@ final class HomeVideoCell: UITableViewCell {
 
     static let reuseIdentifier = "HomeVideoCell"
 
-    private let thumbnailView = AsyncImageView()
+    private let thumbnailView = AsyncImageView(frame: .zero)
     private let durationLabel = PaddedLabel()
     private let liveBadge = PaddedLabel()
     private let titleLabel = UILabel()
@@ -271,7 +271,7 @@ final class HomeShelfCell: UITableViewCell {
 /// One 9:16 Shorts tile: the vertical thumbnail, a two-line title and the channel name.
 final class ShortsTileView: UIControl {
 
-    private let thumbnailView = AsyncImageView()
+    private let thumbnailView = AsyncImageView(frame: .zero)
     private let titleLabel = UILabel()
     private let channelLabel = UILabel()
 

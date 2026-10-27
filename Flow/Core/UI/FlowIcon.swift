@@ -653,7 +653,8 @@ enum FlowIcon: String, CaseIterable {
 /// `UIImageView` would add a layer for nothing.
 final class FlowIconView: UIView {
 
-    var icon: FlowIcon = .home {
+    /// The glyph to draw, or nil for an empty view that is still laid out.
+    var icon: FlowIcon? = .home {
         didSet { setNeedsDisplay() }
     }
 
@@ -711,6 +712,10 @@ final class FlowIconView: UIView {
         context.translateBy(x: origin.x, y: origin.y)
         let scale = side / 24.0
         context.scaleBy(x: scale, y: scale)
+        guard let icon = icon else {
+            context.restoreGState()
+            return
+        }
         iconColor.setStroke()
         iconColor.setFill()
         let drawing = icon.drawing
@@ -730,7 +735,7 @@ final class FlowIconView: UIView {
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window != nil {
-            iconColor = iconColor
+            setNeedsDisplay()
         }
     }
 }
