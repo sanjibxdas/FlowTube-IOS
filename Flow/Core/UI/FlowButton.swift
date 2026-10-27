@@ -26,6 +26,8 @@ final class FlowButton: UIControl {
 
     private(set) var style: FlowButtonStyle = .filled
     private var icon: FlowIcon?
+    /// Set by `setIconColor`; re-applied after theming so a palette switch keeps it.
+    private var iconColorOverride: UIColor?
     private var titleText: String = ""
 
     /// The action the button runs. Set by the owning screen.
@@ -127,6 +129,13 @@ final class FlowButton: UIControl {
     }
 
     /// Replaces the title after creation, e.g. "Subscribe" to "Subscribed".
+    /// Overrides the icon tint for call sites that need a specific colour (for example the
+    /// artist hero, where the share button sits on artwork rather than on a container).
+    func setIconColor(_ color: UIColor) {
+        iconColorOverride = color
+        iconView.iconColor = color
+    }
+
     func setTitle(_ title: String) {
         titleText = title
         titleLabel.text = title
@@ -196,7 +205,10 @@ final class FlowButton: UIControl {
             container.layer.borderWidth = 0.0
         }
         alpha = isEnabled ? 1.0 : 0.38
-    }
+            if let override = iconColorOverride {
+            iconView.iconColor = override
+        }
+}
 
     override func layoutSubviews() {
         super.layoutSubviews()

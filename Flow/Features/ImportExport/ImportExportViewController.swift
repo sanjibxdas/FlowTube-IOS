@@ -84,14 +84,13 @@ enum FlowZipArchive {
     static func write(_ entries: [FlowZipEntry]) -> Data {
         var output = Data()
         var central = Data()
-        var offsets: [Int] = []
         let stamp = dosTimestamp(Date())
 
         for entry in entries {
+            let localOffset = output.count
             let nameBytes = Array(entry.name.utf8)
             let payload = [UInt8](entry.data)
             let crc = FlowCRC32.checksum(payload)
-            offsets.append(output.count)
 
             appendUInt32(localSignature, to: &output)
             appendUInt16(20, to: &output)              // version needed
@@ -123,7 +122,7 @@ enum FlowZipArchive {
             appendUInt16(0, to: &central)              // disk
             appendUInt16(0, to: &central)              // internal attributes
             appendUInt32(0, to: &central)              // external attributes
-            appendUInt32(UInt32(offsets[offsets.count - 1]), to: &central)
+            appendUInt32(UInt32(localOffset), to: &central)
             central.append(contentsOf: nameBytes)
         }
 
@@ -600,7 +599,7 @@ struct FlowBackupArchive {
     private let notes: [FlowBackupNoteRecord]
     private let searches: [(query: String, at: Date)]
     private let savedShorts: [(videoId: String, title: String, channelName: String, thumbnailUrl: String, savedAt: Date)]
-    private let settings: [(key: PrefsStore.Key, kind: String, string: String?, number: Double?)]
+    private let settings: [(key: PrefsStore.Key, kind: String, string: String?, number: Double?, list: [String]?)]
 
     // MARK: - Snapshot
 
@@ -609,18 +608,30 @@ struct FlowBackupArchive {
     static func make() -> FlowBackupArchive {
         let app = FlowApp.shared
         let playlists = app.playlistStore.allPlaylists().map { FlowBackupPlaylistRecord(playlist: $0) }
-        let settings: [(PrefsStore.Key, String, String?, Double?)] = FlowBackupArchive.exportedSettings().map { key in
-            if let text = app.prefs.string(for: key) {
-                return (key, "string", text, nil)
+        let settings: [(key: PrefsStore.Key, kind: String, string: String?, number: Double?, list: [String]?)] =
+            FlowBackupArchive.exportedSettings().map { key in
+                if let text = app.prefs.string(for: key) {
+                    return (key, "string", text, nil, nil)
+                }
+                if let list = UserDefaults.standard.stringArray(forKey: key.rawValue) {
+                    return (key, "list", nil, nil, list)
+                }
+                guard let number = UserDefaults.standard.object(forKey: key.rawValue) as? NSNumber else {
+                    return (key, "missing", nil, nil, nil)
+                }
+                if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                    return (key, "bool", nil, number.doubleValue, nil)
+                }
+                return (key, "double", nil, number.doubleValue, nil)
             }
-            guard let number = UserDefaults.standard.object(forKey: key.rawValue) as? NSNumber else {
-                return (key, "missing", nil, nil)
-            }
-            if CFGetTypeID(number) == CFBooleanGetTypeID() {
-                return (key, "bool", nil, number.doubleValue)
-            }
-            return (key, "double", nil, number.doubleValue)
+        let searches: [(query: String, at: Date)] = SearchHistoryStore.shared.recent(limit: 200).map {
+            (query: $0, at: Date())
         }
+        let shorts: [(videoId: String, title: String, channelName: String, thumbnailUrl: String, savedAt: Date)] =
+            SavedShortsStore.shared.all().map {
+                (videoId: $0.videoId, title: $0.title, channelName: $0.channelName,
+                 thumbnailUrl: $0.thumbnailUrl, savedAt: $0.savedAt)
+            }
         return FlowBackupArchive(
             exportedAt: Date(),
             appVersion: FlowBackupArchive.appVersion(),
@@ -628,9 +639,9 @@ struct FlowBackupArchive {
             subscriptions: app.subscriptionStore.all.map { FlowBackupSubscriptionRecord(subscription: $0) },
             playlists: playlists,
             notes: app.noteStore.all().map { FlowBackupNoteRecord(note: $0) },
-            searches: SearchHistoryStore.shared.recent(limit: 200).map { ($0, Date()) },
-            savedShorts: SavedShortsStore.shared.all().map { ($0.videoId, $0.title, $0.channelName, $0.thumbnailUrl, $0.savedAt) },
-            settings: settings.filter { $0.1 != "missing" }
+            searches: searches,
+            savedShorts: shorts,
+            settings: settings.filter { $0.kind != "missing" }
         )
     }
 
@@ -701,22 +712,23 @@ struct FlowBackupArchive {
             playlists.append(record)
         }
 
-        let searches = ((root["searchHistory"] as? [[String: Any]]) ?? []).compactMap { entry -> (String, Date)? in
-            guard let query = entry["query"] as? String, !query.isBlank else { return nil }
-            let at = Date(timeIntervalSince1970: FlowBackupHistoryRecord.milliseconds(entry["timestamp"]) / 1000.0)
-            return (query, at)
-        }
-        let shorts = ((root["savedShorts"] as? [[String: Any]]) ?? []).compactMap { entry
-            -> (String, String, String, String, Date)? in
-            guard let videoId = entry["videoId"] as? String, !videoId.isEmpty else { return nil }
-            return (
-                videoId,
-                (entry["title"] as? String) ?? "",
-                (entry["channelName"] as? String) ?? "",
-                (entry["thumbnailUrl"] as? String) ?? "",
-                Date(timeIntervalSince1970: FlowBackupHistoryRecord.milliseconds(entry["savedAt"]) / 1000.0)
-            )
-        }
+        let searches: [(query: String, at: Date)] =
+            ((root["searchHistory"] as? [[String: Any]]) ?? []).compactMap { entry in
+                guard let query = entry["query"] as? String, !query.isBlank else { return nil }
+                let at = Date(timeIntervalSince1970: FlowBackupHistoryRecord.milliseconds(entry["timestamp"]) / 1000.0)
+                return (query: query, at: at)
+            }
+        let shorts: [(videoId: String, title: String, channelName: String, thumbnailUrl: String, savedAt: Date)] =
+            ((root["savedShorts"] as? [[String: Any]]) ?? []).compactMap { entry in
+                guard let videoId = entry["videoId"] as? String, !videoId.isEmpty else { return nil }
+                return (
+                    videoId: videoId,
+                    title: (entry["title"] as? String) ?? "",
+                    channelName: (entry["channelName"] as? String) ?? "",
+                    thumbnailUrl: (entry["thumbnailUrl"] as? String) ?? "",
+                    savedAt: Date(timeIntervalSince1970: FlowBackupHistoryRecord.milliseconds(entry["savedAt"]) / 1000.0)
+                )
+            }
 
         let settings = FlowBackupArchive.decodeSettings(root["settings"] as? [String: Any] ?? [:])
         let exportedAt = Date(timeIntervalSince1970: FlowBackupHistoryRecord.milliseconds(root["timestamp"]) / 1000.0)
@@ -735,9 +747,11 @@ struct FlowBackupArchive {
         )
     }
 
-    /// Settings are written as three typed maps, which is the shape the Android backup uses.
-    private static func decodeSettings(_ root: [String: Any]) -> [(PrefsStore.Key, String, String?, Double?)] {
-        var result: [(PrefsStore.Key, String, String?, Double?)] = []
+    /// Settings are written as typed maps, which is the shape the Android backup uses.
+    private static func decodeSettings(
+        _ root: [String: Any]
+    ) -> [(key: PrefsStore.Key, kind: String, string: String?, number: Double?, list: [String]?)] {
+        var result: [(key: PrefsStore.Key, kind: String, string: String?, number: Double?, list: [String]?)] = []
         let strings = (root["strings"] as? [String: Any]) ?? [:]
         let booleans = (root["booleans"] as? [String: Any]) ?? [:]
         let numbers = (root["doubles"] as? [String: Any]) ?? [:]
@@ -745,19 +759,23 @@ struct FlowBackupArchive {
         let floats = (root["floats"] as? [String: Any]) ?? [:]
         let longs = (root["longs"] as? [String: Any]) ?? [:]
 
+        let lists = (root["lists"] as? [String: Any]) ?? [:]
+
         for key in exportedSettings() {
             if let value = strings[key.rawValue] as? String {
-                result.append((key, "string", value, nil))
+                result.append((key: key, kind: "string", string: value, number: nil, list: nil))
+            } else if let value = lists[key.rawValue] as? [String] {
+                result.append((key: key, kind: "list", string: nil, number: nil, list: value))
             } else if let value = booleans[key.rawValue] as? NSNumber {
-                result.append((key, "bool", nil, value.doubleValue))
+                result.append((key: key, kind: "bool", string: nil, number: value.doubleValue, list: nil))
             } else if let value = numbers[key.rawValue] as? NSNumber {
-                result.append((key, "double", nil, value.doubleValue))
+                result.append((key: key, kind: "double", string: nil, number: value.doubleValue, list: nil))
             } else if let value = floats[key.rawValue] as? NSNumber {
-                result.append((key, "double", nil, value.doubleValue))
+                result.append((key: key, kind: "double", string: nil, number: value.doubleValue, list: nil))
             } else if let value = integers[key.rawValue] as? NSNumber {
-                result.append((key, "double", nil, value.doubleValue))
+                result.append((key: key, kind: "double", string: nil, number: value.doubleValue, list: nil))
             } else if let value = longs[key.rawValue] as? NSNumber {
-                result.append((key, "double", nil, value.doubleValue))
+                result.append((key: key, kind: "double", string: nil, number: value.doubleValue, list: nil))
             }
         }
         return result
@@ -770,10 +788,13 @@ struct FlowBackupArchive {
         var strings: [String: String] = [:]
         var booleans: [String: Bool] = [:]
         var numbers: [String: Double] = [:]
+        var lists: [String: [String]] = [:]
         for setting in settings {
             switch setting.kind {
             case "string":
                 if let value = setting.string { strings[setting.key.rawValue] = value }
+            case "list":
+                if let value = setting.list { lists[setting.key.rawValue] = value }
             case "bool":
                 if let value = setting.number { booleans[setting.key.rawValue] = value != 0 }
             case "double":
@@ -820,6 +841,7 @@ struct FlowBackupArchive {
                 "strings": strings,
                 "booleans": booleans,
                 "doubles": numbers,
+                "lists": lists,
             ],
         ]
 
@@ -894,14 +916,15 @@ struct FlowBackupArchive {
         var counts = FlowBackupCounts()
         guard !records.isEmpty else { return counts }
         let store = FlowApp.shared.historyStore
-        if !merge {
-            store.clear()
-        }
-        // Paused history refuses writes by design. Saying so beats reporting a count that never
-        // reached the table.
+        // Paused history refuses writes by design, and clearing first would then leave the viewer
+        // with neither their old history nor the imported one. Saying so beats reporting a count
+        // that never reached the table.
         guard !FlowApp.shared.prefs.historyPaused else {
             counts.skipped += records.count
             return counts
+        }
+        if !merge {
+            store.clear()
         }
         for record in records {
             if merge && store.contains(videoId: record.videoId) {
@@ -1282,12 +1305,12 @@ final class ImportExportRow: UIView {
     private let iconView = FlowIconView()
     private let titleLabel = UILabel()
     private let detailLabel = UILabel()
-    let button: FlowButton
+    let button = FlowButton()
 
     init(icon: FlowIcon, title: String, detail: String, buttonTitle: String, style: FlowButtonStyle) {
-        button = FlowButton.make(buttonTitle, style: style, icon: nil)
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
+        button.configure(title: buttonTitle, style: style, icon: nil)
 
         iconContainer.translatesAutoresizingMaskIntoConstraints = false
         iconContainer.layer.cornerRadius = 20.0

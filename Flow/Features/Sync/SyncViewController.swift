@@ -430,12 +430,16 @@ final class FlowSyncHTTPServer {
         }
 
         let contentLength = Int(headers["content-length"] ?? "0") ?? 0
+        guard contentLength >= 0, contentLength <= 4 * 1024 * 1024 else { return nil }
         var body = buffer.subdata(in: range.upperBound..<buffer.count)
         while body.count < contentLength {
             let received = recv(fd, &chunk, chunk.count, 0)
             if received <= 0 { break }
             body.append(contentsOf: chunk[0..<received])
         }
+        // A short body means the client gave up mid-request; answering it would apply half a
+        // document, so the request is dropped instead.
+        guard body.count >= contentLength else { return nil }
         if body.count > contentLength {
             body = body.subdata(in: 0..<contentLength)
         }
@@ -665,7 +669,8 @@ final class FlowSyncBonjourBrowser: NSObject, NetServiceBrowserDelegate, NetServ
             var storage = sockaddr_storage()
             let copied = withUnsafeMutableBytes(of: &storage) { destination -> Int in
                 let count = min(destination.count, data.count)
-                data.copyBytes(to: destination.bindMemory(to: UInt8.self), count: count)
+                guard let base = destination.baseAddress else { return 0 }
+                data.copyBytes(to: base.assumingMemoryBound(to: UInt8.self), count: count)
                 return count
             }
             guard copied >= MemoryLayout<sockaddr>.size else { continue }
@@ -715,17 +720,6 @@ enum FlowSyncPayloadCodec {
             return notesPayload()
         case .settings:
             return settingsPayload()
-        }
-    }
-
-    /// How many items a collection will send, for the consent sheet.
-    static func itemCount(for collection: SyncCollection) -> Int {
-        switch collection {
-        case .playlists: return FlowApp.shared.playlistStore.allPlaylists().count
-        case .watchHistory: return FlowApp.shared.historyStore.count
-        case .subscriptions: return FlowApp.shared.subscriptionStore.count
-        case .notes: return FlowApp.shared.noteStore.all().count
-        case .settings: return settingsKeys().count
         }
     }
 

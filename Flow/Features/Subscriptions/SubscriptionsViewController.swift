@@ -60,10 +60,10 @@ final class SubscriptionsViewController: UIViewController {
     private let noUploadsState = FlowEmptyState.make(
         kind: .custom(
             icon: .subscriptions,
-            title: "No uploads yet",
-            message: "New videos from the channels you follow will appear here."
+            title: "Nothing here right now",
+            message: "Pull down to look again later."
         ),
-        actionTitle: "Refresh"
+        actionTitle: "Refresh Feed"
     )
     /// Built without a target: the action is attached once the view is loaded, because a stored
     /// property cannot refer to `self` while the controller is still being initialised.
@@ -118,7 +118,6 @@ final class SubscriptionsViewController: UIViewController {
         buildOverlays()
         observeSignals()
         applyTheme()
-        refreshIfNeeded()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -307,7 +306,7 @@ final class SubscriptionsViewController: UIViewController {
                     self.errorState.configure(
                         kind: .custom(
                             icon: .wifi,
-                            title: "Couldn't load subscriptions",
+                            title: "Failed to load feed",
                             message: error.displayMessage
                         ),
                         actionTitle: "Retry"
@@ -383,8 +382,13 @@ final class SubscriptionsViewController: UIViewController {
                 .filter { $0.notificationsEnabled }
                 .map { $0.channelId }
         )
-        let videos = items.map { $0.video }.filter { enabled.contains($0.channelId) }
-        NotificationStore.shared.recordNewUploads(videos)
+        // Only the last week's uploads are news. A channel page also lists older videos, and filing
+        // those would bury the inbox under a backlog the viewer has already seen.
+        let cutoff = Date().addingTimeInterval(-7.0 * 86_400.0)
+        let candidates = items
+            .filter { $0.uploadedAt >= cutoff && enabled.contains($0.video.channelId) }
+            .map { NotificationCandidate(video: $0.video, arrivedAt: $0.uploadedAt) }
+        NotificationStore.shared.recordNewUploads(candidates)
     }
 
     // MARK: - Theme
@@ -410,9 +414,10 @@ final class SubscriptionsViewController: UIViewController {
     }
 
     private func updateNotificationBadge() {
-        let count = NotificationStore.shared.unreadCount
+        let store = NotificationStore.shared
+        let count = store.unreadCount
         bellBadge.isHidden = count == 0
-        bellBadge.text = count > 9 ? "9+" : "\(count)"
+        bellBadge.text = store.badgeText
         bellButton.accessibilityLabel = count > 0
             ? "Notifications, \(count) unread"
             : "Notifications"
@@ -853,7 +858,9 @@ final class SubscriptionFeedCell: UITableViewCell {
             metaLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
             metaLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
             metaLabel.topAnchor.constraint(equalTo: avatarView.bottomAnchor, constant: FlowSpacing.xxs),
-            metaLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -FlowSpacing.md),
+            // An inequality, not an equality: a one-line title must not force the row shorter than
+            // the still beside it.
+            metaLabel.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor, constant: -FlowSpacing.md),
         ])
         applyTheme()
     }
@@ -942,7 +949,7 @@ final class SubscriptionFeedCell: UITableViewCell {
         metaLabel.textColor = scheme.onSurfaceVariant
         durationLabel.textColor = .white
         durationLabel.backgroundColor = UIColor.black.withAlphaComponent(0.75)
-        progressTrack.backgroundColor = scheme.surfaceContainerHighest
+        progressTrack.backgroundColor = scheme.outlineVariant
         progressFill.backgroundColor = scheme.primary
         selectedBackgroundView?.backgroundColor = scheme.surfaceContainerHigh
     }

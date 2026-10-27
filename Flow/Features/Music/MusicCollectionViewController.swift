@@ -333,8 +333,9 @@ final class MusicCollectionViewController: UIViewController {
         }
     }
 
-    /// Whether the songs live in the app's own database, which is what makes them reorderable.
-    /// Liked music counts as stored even before the first like has created its playlist row.
+    /// Whether the songs live in the app's own database rather than on YouTube, which is what lets
+    /// a song be removed from the page. Liked music counts as stored even before the first like has
+    /// created its playlist row.
     private var isStored: Bool {
         switch source {
         case .liked, .local:

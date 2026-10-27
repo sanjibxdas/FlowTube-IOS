@@ -375,6 +375,11 @@ final class SettingsSwitchCell: UITableViewCell {
     private let toggle = UISwitch()
     private var iconWidth: NSLayoutConstraint?
     private var onChange: ((Bool) -> Void)?
+    /// Whether the row can be toggled. `UITableViewCell` is not a `UIControl`, so the row carries
+    /// its own enabled flag and mirrors it onto the switch and the labels.
+    var isEnabled: Bool = true {
+        didSet { applyEnabledState() }
+    }
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -467,6 +472,15 @@ final class SettingsSwitchCell: UITableViewCell {
     }
 
     /// Repaints the row in the current palette.
+    private func applyEnabledState() {
+        toggle.isEnabled = isEnabled
+        toggle.alpha = isEnabled ? 1.0 : 0.4
+        titleLabel.alpha = isEnabled ? 1.0 : 0.5
+        detailLabel.alpha = isEnabled ? 1.0 : 0.5
+        iconView.alpha = isEnabled ? 1.0 : 0.5
+        accessibilityTraits = isEnabled ? [] : .notEnabled
+    }
+
     func applyTheme() {
         let scheme = FlowTheme.shared.scheme
         titleLabel.textColor = isEnabled ? scheme.onSurface : scheme.onSurfaceVariant

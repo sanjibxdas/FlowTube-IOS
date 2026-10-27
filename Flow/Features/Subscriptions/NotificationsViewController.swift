@@ -18,6 +18,35 @@ enum FlowNotificationKind: String {
         default: self = .newVideo
         }
     }
+
+    /// The glyph a row of this kind shows when it has no still to show.
+    var icon: FlowIcon {
+        switch self {
+        case .newVideo: return .notification
+        case .mention: return .comment
+        case .system: return .sync
+        }
+    }
+
+    /// The word a row of this kind carries beside its channel and time. Uploads need none: they are
+    /// the inbox's default and a label on every row would be noise.
+    var label: String? {
+        switch self {
+        case .newVideo: return nil
+        case .mention: return "Mention"
+        case .system: return "System"
+        }
+    }
+}
+
+/// An upload the subscriptions feed wants the inbox to consider.
+///
+/// `arrivedAt` is the moment the video was published, not the moment the feed saw it: a channel
+/// page lists a week of uploads at once, and every one of them should keep its own place in the
+/// timeline rather than all claiming to have arrived during the refresh.
+struct NotificationCandidate {
+    let video: Video
+    let arrivedAt: Date
 }
 
 /// One row of the inbox.
@@ -91,12 +120,20 @@ final class NotificationStore {
         }
     }
 
-    /// How many notifications the badge should show.
+    /// How many notifications are unread.
     var unreadCount: Int {
         ensureTable()
         return database.scalarInt(
             "SELECT COUNT(*) AS value FROM notifications WHERE is_read = 0;"
         )
+    }
+
+    /// The badge's text: the count, capped at "9+" the way the Android app caps it. Nil when there
+    /// is nothing unread, which is what hides the badge.
+    var badgeText: String? {
+        let count = unreadCount
+        if count == 0 { return nil }
+        return count > 9 ? "9+" : "\(count)"
     }
 
     // MARK: Writing
@@ -140,7 +177,7 @@ final class NotificationStore {
     /// The first successful refresh after an install only marks the store as seeded: everything it
     /// saw predates the viewer's subscriptions being known here, so announcing it would open the
     /// app with an inbox full of videos that are already old news.
-    func recordNewUploads(_ videos: [Video]) {
+    func recordNewUploads(_ candidates: [NotificationCandidate]) {
         ensureTable()
 
         if !UserDefaults.standard.bool(forKey: NotificationStore.seededKey) {
@@ -148,11 +185,11 @@ final class NotificationStore {
             return
         }
 
-        guard !videos.isEmpty else { return }
+        guard !candidates.isEmpty else { return }
 
         var inserted = 0
         database.transaction { transaction in
-            for video in videos {
+            for candidate in candidates {
                 inserted += transaction.execute(
                     """
                     INSERT OR IGNORE INTO notifications
@@ -160,11 +197,11 @@ final class NotificationStore {
                     VALUES (?, ?, ?, ?, ?, 0, ?);
                     """,
                     [
-                        .text(video.id),
-                        .text(video.title),
-                        .text(video.channelName),
-                        .text(video.thumbnailUrl),
-                        .double(video.timestamp.timeIntervalSince1970),
+                        .text(candidate.video.id),
+                        .text(candidate.video.title),
+                        .text(candidate.video.channelName),
+                        .text(candidate.video.thumbnailUrl),
+                        .double(candidate.arrivedAt.timeIntervalSince1970),
                         .text(FlowNotificationKind.newVideo.rawValue),
                     ]
                 )
@@ -343,9 +380,11 @@ enum NotificationGrouping {
         case .relative:
             return Formatters.relativeDate(date)
         case .timeOfDay:
+            // "jm" asks for the hour and minute in whatever order and clock the locale uses, so a
+            // twelve-hour device reads "2:32 PM" and a twenty-four-hour one "14:32".
             let formatter = DateFormatter()
             formatter.locale = Locale.current
-            formatter.setLocalizedDateFormatFromTemplate("j")
+            formatter.setLocalizedDateFormatFromTemplate("jm")
             return formatter.string(from: date)
         case .weekday:
             let formatter = DateFormatter()
@@ -405,8 +444,13 @@ final class NotificationsViewController: UIViewController {
     private var newIds: Set<Int> = []
     private var tokens: [ObservationToken] = []
     private var hasOpenedInbox = false
+    /// Whether the bar currently omits the clear-all action, so the items are only rebuilt when
+    /// that actually changes rather than on every reload. It starts false because `buildNavigation`
+    /// installs both buttons.
+    private var isChromeEmpty = false
 
-    /// The number of notifications the badge should show.
+    /// The number of notifications still unread. Opening the inbox clears it, so this is only
+    /// non-zero before the screen has appeared.
     var unreadCount: Int {
         return NotificationStore.shared.unreadCount
     }
@@ -533,6 +577,8 @@ final class NotificationsViewController: UIViewController {
         let empty = sections.isEmpty
         tableView.isHidden = empty
         emptyState.isHidden = !empty
+        guard empty != isChromeEmpty else { return }
+        isChromeEmpty = empty
         // The clear-all action only exists while there is something to clear.
         navigationItem.rightBarButtonItems = empty
             ? [UIBarButtonItem(customView: settingsButton)]
@@ -589,9 +635,10 @@ final class NotificationsViewController: UIViewController {
         )
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel, handler: nil))
         alert.addAction(UIAlertAction(title: "Clear all", style: .destructive) { [weak self] _ in
-            NotificationStore.shared.clearAll()
+            // The snapshot refers to rows that are about to be deleted, so it is dropped first;
+            // the store's own event then reloads the list.
             self?.newIds = []
-            self?.reload()
+            NotificationStore.shared.clearAll()
         })
         present(alert, animated: true, completion: nil)
     }
@@ -604,12 +651,12 @@ final class NotificationsViewController: UIViewController {
 
     /// Removes a notification and offers the undo the Android app offers.
     private func remove(_ notification: FlowNotification) {
-        NotificationStore.shared.delete(id: notification.id)
+        // The snapshot is updated before the delete, because the delete posts the event that
+        // reloads the list.
         newIds.remove(notification.id)
-        reload()
-        FlowSnackbar.show("Notification removed", actionTitle: "Undo") { [weak self] in
+        NotificationStore.shared.delete(id: notification.id)
+        FlowSnackbar.show("Notification removed", actionTitle: "Undo") {
             NotificationStore.shared.restore(notification)
-            self?.reload()
         }
     }
 
@@ -621,7 +668,7 @@ final class NotificationsViewController: UIViewController {
         guard let video = notification.video else { return }
         let playlistId = watchLaterPlaylistId()
         guard !playlistId.isEmpty else {
-            FlowSnackbar.showError("Watch Later could not be created.")
+            FlowSnackbar.showError("Failed to save to library")
             return
         }
         if PlaylistStore.shared.contains(videoId: video.id, in: playlistId) {
@@ -725,7 +772,7 @@ extension NotificationsViewController: UITableViewDataSource, UITableViewDelegat
         leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath
     ) -> UISwipeActionsConfiguration? {
         guard let item = notification(at: indexPath), item.video != nil else { return nil }
-        let save = UIContextualAction(style: .normal, title: "Save") { [weak self] _, _, completion in
+        let save = UIContextualAction(style: .normal, title: "Save to Watch Later") { [weak self] _, _, completion in
             self?.saveToWatchLater(item)
             completion(true)
         }
@@ -894,7 +941,9 @@ final class NotificationRowCell: UITableViewCell {
             metaRow.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
             metaRow.trailingAnchor.constraint(lessThanOrEqualTo: titleLabel.trailingAnchor),
             metaRow.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: FlowSpacing.sm),
-            metaRow.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -FlowSpacing.lg),
+            // An inequality, not an equality: a one-line title must not force the row shorter than
+            // the still beside it.
+            metaRow.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor, constant: -FlowSpacing.lg),
 
             dot.widthAnchor.constraint(equalToConstant: NotificationRowCell.dotSize),
             dot.heightAnchor.constraint(equalToConstant: NotificationRowCell.dotSize),
@@ -916,13 +965,21 @@ final class NotificationRowCell: UITableViewCell {
         )
         thumbnail.isHidden = url.isEmpty
         placeholderIcon.isHidden = !url.isEmpty
+        placeholderIcon.icon = notification.kind.icon
 
         titleLabel.text = notification.title
         titleLabel.font = isNew ? FlowTypography.titleSmallEmphasized : FlowTypography.titleSmall
 
         dot.isHidden = !isNew
-        let channel = notification.channelName
-        metaLabel.text = channel.isEmpty ? time : "\(channel) · \(time)"
+        // "channel · time", with the mention or system label standing in for a missing channel.
+        var parts: [String] = []
+        if !notification.channelName.isEmpty {
+            parts.append(notification.channelName)
+        } else if let label = notification.kind.label {
+            parts.append(label)
+        }
+        parts.append(time)
+        metaLabel.text = parts.joined(separator: " · ")
 
         accessibilityLabel = [notification.title, metaLabel.text ?? ""]
             .filter { !$0.isEmpty }
