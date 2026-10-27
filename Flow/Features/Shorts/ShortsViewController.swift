@@ -26,7 +26,14 @@ final class ShortsViewController: UIViewController {
     private let viewModel: ShortsViewModel
     private var collectionView: UICollectionView!
     private let layout = ShortsFlowLayout()
-    private let closeButton = FlowIconButton.make(.back, color: .white, size: 24.0, target: nil, action: nil)
+    /// Built without a target: the action is attached in `buildChrome()`, because a stored property
+    /// cannot refer to `self` while the controller is still being initialised.
+    private let closeButton: FlowIconButton = {
+        let button = FlowIconButton()
+        button.configure(icon: .back, color: .white, size: 24.0)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        return button
+    }()
     private let titleLabel = UILabel()
     private let progressTrack = UIView()
     private let progressFill = UIView()

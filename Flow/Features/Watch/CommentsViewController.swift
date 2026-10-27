@@ -244,6 +244,7 @@ final class CommentsViewController: UIViewController {
                     self.continuation = page.continuation
                     if let total = page.totalText, !total.trimmed.isEmpty {
                         self.totalText = total
+                        self.title = "Comments · " + total
                     }
                     self.rebuildRows()
                     self.updateEmptyState()

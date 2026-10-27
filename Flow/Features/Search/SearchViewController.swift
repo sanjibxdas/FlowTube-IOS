@@ -278,6 +278,15 @@ final class SearchViewController: UIViewController {
         filterButton.setIconColor(scheme.onSurface)
         viewModeButton.setIconColor(scheme.onSurface)
     }
+
+    /// A chrome button with no target yet. The action is attached after construction, because the
+    /// button is a stored property and cannot refer to `self` while it is being initialised.
+    static func makeChromeButton(_ icon: FlowIcon) -> FlowIconButton {
+        let button = FlowIconButton()
+        button.configure(icon: icon, color: FlowTheme.shared.scheme.onSurface, size: 22.0)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        return button
+    }
 }
 
 // MARK: - Search bar

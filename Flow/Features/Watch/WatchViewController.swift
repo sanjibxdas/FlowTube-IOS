@@ -42,6 +42,33 @@ final class WatchViewController: UIViewController {
     private var bag = ObservationBag()
     private var themeToken: ObservationToken?
 
+    /// The first comment and the section's total, fetched once for the preview.
+    private var commentPreview: Comment?
+    private var commentTotalText: String?
+    private var isLoadingCommentPreview = false
+
+    // MARK: - Player layout
+
+    /// The player at its 16:9 size.
+    private var expandedPlayerHeight: NSLayoutConstraint!
+    /// The player shrunk to the mini-player pin.
+    private var compactPlayerHeight: NSLayoutConstraint!
+    /// The player covering the screen while the viewer is in full screen.
+    private var fullscreenPlayerConstraints: [NSLayoutConstraint] = []
+    /// Whether the player is currently pinned small.
+    private var isPlayerCollapsed = false
+    /// Whether the player is covering the screen because the viewer went full screen.
+    private var isPlayerFullscreen = false
+    /// A tap target over the shrunken player, so a tap expands it instead of reaching the controls.
+    private let collapsedTapTarget = UIControl()
+
+    /// How far the page scrolls before the player shrinks, and how far back it must come before it
+    /// grows again. The gap keeps the pin from flickering at the threshold.
+    private static let collapseThreshold: CGFloat = 96.0
+    private static let expandThreshold: CGFloat = 32.0
+    /// The height of the pinned player, matching the shell's mini player bar.
+    private static let compactPlayerHeightValue: CGFloat = 64.0
+
     /// One row of the page below the player.
     private enum WatchRow {
         case info
@@ -51,7 +78,6 @@ final class WatchViewController: UIViewController {
         case comments
         case relatedHeader
         case related(Video)
-        case relatedLoading
 
         var id: String {
             switch self {
@@ -62,7 +88,6 @@ final class WatchViewController: UIViewController {
             case .comments: return "comments"
             case .relatedHeader: return "relatedHeader"
             case .related(let video): return "related:" + video.id
-            case .relatedLoading: return "relatedLoading"
             }
         }
     }
@@ -138,6 +163,46 @@ final class WatchViewController: UIViewController {
         return .lightContent
     }
 
+    /// The player draws the status bar's colour and hides it with its chrome, so the page asks the
+    /// child rather than answering for it.
+    override var childForStatusBarStyle: UIViewController? {
+        return playerController
+    }
+
+    override var childForStatusBarHidden: UIViewController? {
+        return playerController
+    }
+
+    /// The page's own orientation is the player's: portrait while inline, free while full screen.
+    /// iPhone's Info.plist lists only portrait, so the player's full-screen button rotates the
+    /// device through `UIDevice` and this mask is what lets the rotation stick.
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        if playerController?.isFullscreen == true {
+            return .allButUpsideDown
+        }
+        return UIDevice.current.userInterfaceIdiom == .pad ? .all : .portrait
+    }
+
+    override var shouldAutorotate: Bool {
+        return true
+    }
+
+    override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        super.viewWillTransition(to: size, with: coordinator)
+        coordinator.animate(alongsideTransition: { [weak self] _ in
+            self?.reconcilePlayerPresentation()
+            self?.view.layoutIfNeeded()
+        }, completion: nil)
+    }
+
+    override func viewWillLayoutSubviews() {
+        super.viewWillLayoutSubviews()
+        // The player toggles full screen from its own controls without telling the page, so the
+        // page reconciles the container against the player's state on every layout pass. The
+        // compare-and-return inside keeps this from re-entering.
+        reconcilePlayerPresentation()
+    }
+
     // MARK: - Build
 
     private func buildPlayer() {
@@ -162,16 +227,45 @@ final class WatchViewController: UIViewController {
         controller.didMove(toParent: self)
         playerController = controller
 
+        // The player's own back button leaves the page; the page's collapse gesture and full
+        // screen are the player's, so the shell only watches the size it should be.
+        collapsedTapTarget.translatesAutoresizingMaskIntoConstraints = false
+        collapsedTapTarget.backgroundColor = .clear
+        collapsedTapTarget.isHidden = true
+        collapsedTapTarget.addTarget(self, action: #selector(handleCollapsedTap), for: .touchUpInside)
+        collapsedTapTarget.accessibilityLabel = "Expand video"
+        collapsedTapTarget.accessibilityTraits = .button
+        playerContainer.addSubview(collapsedTapTarget)
+
+        expandedPlayerHeight = playerContainer.heightAnchor.constraint(
+            equalTo: view.widthAnchor,
+            multiplier: 9.0 / 16.0
+        )
+        compactPlayerHeight = playerContainer.heightAnchor.constraint(
+            equalToConstant: WatchViewController.compactPlayerHeightValue
+        )
+        fullscreenPlayerConstraints = [
+            playerContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            playerContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            playerContainer.topAnchor.constraint(equalTo: view.topAnchor),
+            playerContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ]
+
         NSLayoutConstraint.activate([
             playerContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             playerContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             playerContainer.topAnchor.constraint(equalTo: view.topAnchor),
-            playerContainer.heightAnchor.constraint(equalTo: view.widthAnchor, multiplier: 9.0 / 16.0),
+            expandedPlayerHeight,
 
             controller.view.leadingAnchor.constraint(equalTo: playerContainer.leadingAnchor),
             controller.view.trailingAnchor.constraint(equalTo: playerContainer.trailingAnchor),
             controller.view.topAnchor.constraint(equalTo: playerContainer.topAnchor),
             controller.view.bottomAnchor.constraint(equalTo: playerContainer.bottomAnchor),
+
+            collapsedTapTarget.leadingAnchor.constraint(equalTo: playerContainer.leadingAnchor),
+            collapsedTapTarget.trailingAnchor.constraint(equalTo: playerContainer.trailingAnchor),
+            collapsedTapTarget.topAnchor.constraint(equalTo: playerContainer.topAnchor),
+            collapsedTapTarget.bottomAnchor.constraint(equalTo: playerContainer.bottomAnchor),
 
             playerErrorLabel.centerXAnchor.constraint(equalTo: playerContainer.centerXAnchor),
             playerErrorLabel.centerYAnchor.constraint(equalTo: playerContainer.centerYAnchor),
@@ -227,6 +321,81 @@ final class WatchViewController: UIViewController {
         ])
     }
 
+    // MARK: - Player presentation
+
+    /// Matches the container to the player's own state: full screen when the player says so,
+    /// otherwise the inline 16:9 box or its pinned size.
+    private func reconcilePlayerPresentation() {
+        let wantsFullscreen = playerController?.isFullscreen ?? false
+        if wantsFullscreen != isPlayerFullscreen {
+            setPlayerFullscreen(wantsFullscreen)
+        }
+        guard !isPlayerFullscreen else { return }
+        if isPlayerCollapsed {
+            expandedPlayerHeight.isActive = false
+            compactPlayerHeight.isActive = true
+        } else {
+            compactPlayerHeight.isActive = false
+            expandedPlayerHeight.isActive = true
+        }
+    }
+
+    /// Lifts the player over the whole page, or puts it back in its box.
+    private func setPlayerFullscreen(_ fullscreen: Bool) {
+        isPlayerFullscreen = fullscreen
+        if fullscreen {
+            expandedPlayerHeight.isActive = false
+            compactPlayerHeight.isActive = false
+            NSLayoutConstraint.activate(fullscreenPlayerConstraints)
+            view.bringSubviewToFront(playerContainer)
+            tableView.isHidden = true
+            collapsedTapTarget.isHidden = true
+            setNeedsStatusBarAppearanceUpdate()
+            return
+        }
+        NSLayoutConstraint.deactivate(fullscreenPlayerConstraints)
+        tableView.isHidden = false
+        collapsedTapTarget.isHidden = !isPlayerCollapsed
+        reconcilePlayerPresentation()
+        setNeedsStatusBarAppearanceUpdate()
+    }
+
+    /// Shrinks the player to the pin, or grows it back.
+    private func setPlayerCollapsed(_ collapsed: Bool, animated: Bool) {
+        guard collapsed != isPlayerCollapsed, !isPlayerFullscreen else { return }
+        isPlayerCollapsed = collapsed
+        collapsedTapTarget.isHidden = !collapsed
+        if collapsed {
+            expandedPlayerHeight.isActive = false
+            compactPlayerHeight.isActive = true
+        } else {
+            compactPlayerHeight.isActive = false
+            expandedPlayerHeight.isActive = true
+        }
+        guard animated else {
+            view.layoutIfNeeded()
+            return
+        }
+        FlowMotion.animate({
+            self.view.layoutIfNeeded()
+        }, completion: nil)
+    }
+
+    @objc private func handleCollapsedTap() {
+        setPlayerCollapsed(false, animated: true)
+        tableView.setContentOffset(.zero, animated: true)
+    }
+
+    /// Follows the page's scroll: past the threshold the player pins, back near the top it returns.
+    private func updatePlayerCollapse(for offset: CGFloat) {
+        guard !isPlayerFullscreen else { return }
+        if !isPlayerCollapsed && offset > WatchViewController.collapseThreshold {
+            setPlayerCollapsed(true, animated: true)
+        } else if isPlayerCollapsed && offset < WatchViewController.expandThreshold {
+            setPlayerCollapsed(false, animated: true)
+        }
+    }
+
     // MARK: - Loading
 
     private func load() {
@@ -271,6 +440,38 @@ final class WatchViewController: UIViewController {
         rebuildRows()
         tableView.reloadData()
         updateEmptyState()
+        loadCommentPreview(continuation: page.commentsContinuation)
+    }
+
+    /// Fetches the first comment for the preview card.
+    ///
+    /// The preview is a courtesy, so a failure leaves the card saying "Add a comment..." rather
+    /// than showing an error on a page that otherwise loaded. The first page is also what the full
+    /// comments screen will ask for, so `ImageLoader` and the network cache make the second request
+    /// cheap.
+    private func loadCommentPreview(continuation: String?) {
+        guard let token = continuation, !token.isEmpty, !isLoadingCommentPreview else {
+            return
+        }
+        isLoadingCommentPreview = true
+        api.comments(videoId: videoId, continuation: token) { [weak self] result in
+            guard let self = self else { return }
+            DispatchQueue.main.async {
+                self.isLoadingCommentPreview = false
+                guard case .success(let page) = result else { return }
+                self.commentPreview = page.comments.first
+                self.commentTotalText = page.totalText
+                self.reloadCommentsRow()
+            }
+        }
+    }
+
+    private func reloadCommentsRow() {
+        guard let index = rows.firstIndex(where: { row in
+            if case .comments = row { return true }
+            return false
+        }) else { return }
+        tableView.reloadRows(at: [IndexPath(row: index, section: 0)], with: .none)
     }
 
     private func showError(_ error: FlowError) {
@@ -292,9 +493,9 @@ final class WatchViewController: UIViewController {
             return
         }
         var result: [WatchRow] = [.info, .channel, .actions, .description]
-        if model.page.commentsContinuation != nil || !model.page.related.isEmpty {
-            result.append(.comments)
-        }
+        // The preview is the way into the comment section, so it is shown even when the page sent
+        // no continuation: the full screen then explains that comments are off.
+        result.append(.comments)
         if !model.page.related.isEmpty {
             result.append(.relatedHeader)
             for video in model.page.related {
@@ -508,12 +709,14 @@ final class WatchViewController: UIViewController {
         guard let video = video else { return }
         let channelName = video.channelName
         let avatar = video.channelThumbnailUrl
-        let subscribers = Int(min(video.viewCount, Int64(Int.max)))
+        // The watch page carries no subscriber figure of its own, so an existing subscription's
+        // count is kept rather than overwritten with a guess.
+        let existing = SubscriptionStore.shared.subscription(for: video.channelId)?.subscriberCount ?? 0
         let nowSubscribed = SubscriptionStore.shared.toggle(
             channelId: video.channelId,
             name: channelName,
             avatarUrl: avatar,
-            subscriberCount: subscribers
+            subscriberCount: existing
         )
         if nowSubscribed {
             FlowSnackbar.show("Subscribed to " + channelName, actionTitle: "Undo") { [weak self] in
@@ -579,6 +782,9 @@ extension WatchViewController: UITableViewDataSource {
         case .channel:
             let cell = tableView.dequeueReusableCell(withIdentifier: WatchChannelCell.reuseIdentifier, for: indexPath)
             if let channelCell = cell as? WatchChannelCell, let video = video {
+                // The watch page's `next` response carries the owner's subscriber line, but
+                // `WatchPage` keeps only the video from it, so the row shows the name alone rather
+                // than a figure the page does not have.
                 let channel = Channel(
                     id: video.channelId,
                     name: video.channelName,
@@ -630,9 +836,8 @@ extension WatchViewController: UITableViewDataSource {
         case .comments:
             let cell = tableView.dequeueReusableCell(withIdentifier: WatchCommentsPreviewCell.reuseIdentifier, for: indexPath)
             if let commentsCell = cell as? WatchCommentsPreviewCell {
-                commentsCell.configure(totalText: nil, preview: nil)
+                commentsCell.configure(totalText: commentTotalText, preview: commentPreview)
                 commentsCell.onOpen = { [weak self] in self?.openComments() }
-                loadCommentPreview(into: commentsCell)
             }
             return cell
 
@@ -649,26 +854,9 @@ extension WatchViewController: UITableViewDataSource {
                 relatedCell.configure(with: related)
             }
             return cell
-
-        case .relatedLoading:
-            let cell = tableView.dequeueReusableCell(withIdentifier: WatchSectionHeaderCell.reuseIdentifier, for: indexPath)
-            if let headerCell = cell as? WatchSectionHeaderCell {
-                headerCell.configure(title: "")
-            }
-            return cell
         }
     }
 
-    /// Fills the comments preview with the first comment, once it has loaded.
-    private func loadCommentPreview(into cell: WatchCommentsPreviewCell) {
-        guard let token = model?.page.commentsContinuation else { return }
-        api.comments(videoId: videoId, continuation: token) { [weak cell] result in
-            guard case .success(let page) = result else { return }
-            DispatchQueue.main.async {
-                cell?.configure(totalText: page.totalText, preview: page.comments.first)
-            }
-        }
-    }
 }
 
 // MARK: - Delegate
@@ -690,6 +878,12 @@ extension WatchViewController: UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
         return UITableView.automaticDimension
+    }
+
+    /// Pins the player once the viewer has scrolled past the metadata, and restores it at the top.
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard scrollView === tableView else { return }
+        updatePlayerCollapse(for: scrollView.contentOffset.y)
     }
 }
 
@@ -1410,7 +1604,6 @@ final class WatchCommentsPreviewCell: UITableViewCell {
 
     private let card = FlowCard.make(elevation: .low)
     private let titleLabel = UILabel()
-    private let totalLabel = UILabel()
     private let authorLabel = UILabel()
     private let bodyLabel = UILabel()
     private let chevronView = FlowIconView()
@@ -1439,10 +1632,6 @@ final class WatchCommentsPreviewCell: UITableViewCell {
         titleLabel.text = "Comments"
         card.contentView.addSubview(titleLabel)
 
-        totalLabel.translatesAutoresizingMaskIntoConstraints = false
-        totalLabel.font = FlowTypography.labelSmall
-        card.contentView.addSubview(totalLabel)
-
         chevronView.translatesAutoresizingMaskIntoConstraints = false
         chevronView.icon = .chevronRight
         chevronView.iconSize = 18.0
@@ -1465,9 +1654,7 @@ final class WatchCommentsPreviewCell: UITableViewCell {
 
             titleLabel.leadingAnchor.constraint(equalTo: card.contentView.leadingAnchor),
             titleLabel.topAnchor.constraint(equalTo: card.contentView.topAnchor),
-
-            totalLabel.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: FlowSpacing.md),
-            totalLabel.firstBaselineAnchor.constraint(equalTo: titleLabel.firstBaselineAnchor),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: chevronView.leadingAnchor, constant: -FlowSpacing.md),
 
             chevronView.trailingAnchor.constraint(equalTo: card.contentView.trailingAnchor),
             chevronView.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
@@ -1486,16 +1673,22 @@ final class WatchCommentsPreviewCell: UITableViewCell {
         applyTheme()
     }
 
-    /// Fills the preview.
+    /// Fills the preview. The heading is Android's "Comments · 1.2K" when the count is known.
     func configure(totalText: String?, preview: Comment?) {
-        totalLabel.text = totalText
-        totalLabel.isHidden = (totalText ?? "").isEmpty
-        authorLabel.text = preview?.author
-        authorLabel.isHidden = preview == nil
-        bodyLabel.text = preview?.text
-        bodyLabel.isHidden = preview == nil
-        if preview == nil {
-            bodyLabel.text = "Tap to read the comments"
+        if let total = totalText, !total.isEmpty {
+            titleLabel.text = "Comments · " + total
+        } else {
+            titleLabel.text = "Comments"
+        }
+
+        if let preview = preview {
+            authorLabel.text = CommentsViewController.displayAuthor(preview.author)
+            authorLabel.isHidden = false
+            bodyLabel.text = preview.text
+            bodyLabel.isHidden = false
+        } else {
+            authorLabel.isHidden = true
+            bodyLabel.text = "Add a comment..."
             bodyLabel.isHidden = false
         }
         applyTheme()
@@ -1504,7 +1697,6 @@ final class WatchCommentsPreviewCell: UITableViewCell {
     private func applyTheme() {
         let scheme = FlowTheme.shared.scheme
         titleLabel.textColor = scheme.onSurface
-        totalLabel.textColor = scheme.onSurfaceVariant
         authorLabel.textColor = scheme.onSurfaceVariant
         bodyLabel.textColor = scheme.onSurface
         chevronView.iconColor = scheme.onSurfaceVariant

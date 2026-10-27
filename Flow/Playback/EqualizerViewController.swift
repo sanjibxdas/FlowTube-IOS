@@ -38,11 +38,12 @@ final class EqualizerViewController: PlaybackSheetController {
     /// Guards against the engine's change notification rebuilding the controls that caused it.
     private var isApplying = false
 
-    /// The engine has one change slot. The sheet takes it over while it is alive and gives it back
-    /// when the last instance goes away, so a handler installed before the sheet opened survives.
-    /// Both are touched only on the main queue, which is where the engine notifies.
-    private static var liveCount = 0
+    /// The engine has one change slot. The open sheets share it: the first claims it and remembers
+    /// whatever was there, and the last one to go gives it back. The registry is weak, so a sheet
+    /// that is dismissed drops out without the handler keeping it alive.
+    private static let openSheets = NSHashTable<EqualizerViewController>.weakObjects()
     private static var baseHandler: (() -> Void)?
+    private static var isHandlerInstalled = false
 
     override var sheetHeightFraction: CGFloat {
         return 0.94
@@ -104,6 +105,7 @@ final class EqualizerViewController: PlaybackSheetController {
         NSLayoutConstraint.activate([
             titleLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: FlowSpacing.xl),
             titleLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: FlowSpacing.xs),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: enabledSwitch.leadingAnchor, constant: -FlowSpacing.md),
 
             enabledSwitch.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -FlowSpacing.sm),
             enabledSwitch.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
@@ -148,6 +150,18 @@ final class EqualizerViewController: PlaybackSheetController {
     private func buildPresets() {
         stack.addArrangedSubview(makeSectionHeader("Presets"))
 
+        // `FlowChipRow` carries its own screen margin so it can sit flush with a screen edge. The
+        // stack is already inset, so the row is pulled back out to keep the chips on the same
+        // vertical line as the section headers.
+        let host = UIView()
+        host.addSubviewForAutoLayout(presetChips)
+        NSLayoutConstraint.activate([
+            presetChips.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: -FlowSpacing.xl),
+            presetChips.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: FlowSpacing.xl),
+            presetChips.topAnchor.constraint(equalTo: host.topAnchor),
+            presetChips.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+        ])
+
         presetChips.setTitles(AudioEngine.presets.map { $0.name }, selectedIndex: selectedPresetIndex())
         presetChips.onSelect = { [weak self] index in
             guard let self = self, let preset = AudioEngine.presets.element(at: index) else { return }
@@ -155,7 +169,7 @@ final class EqualizerViewController: PlaybackSheetController {
             self.service.refreshEqualizer()
             self.reload()
         }
-        stack.addArrangedSubview(presetChips)
+        stack.addArrangedSubview(host)
     }
 
     private func buildBands() {
@@ -234,22 +248,24 @@ final class EqualizerViewController: PlaybackSheetController {
 
     /// Takes the engine's change slot, remembering whatever was there so it can be restored.
     private func claimEngineHandler() {
-        guard EqualizerViewController.liveCount == 0 else {
-            EqualizerViewController.liveCount += 1
-            return
-        }
+        EqualizerViewController.openSheets.add(self)
+        guard !EqualizerViewController.isHandlerInstalled else { return }
+        EqualizerViewController.isHandlerInstalled = true
         EqualizerViewController.baseHandler = engine.onChange
-        EqualizerViewController.liveCount = 1
-        engine.onChange = { [weak self] in
+        engine.onChange = {
             EqualizerViewController.baseHandler?()
-            self?.reload()
+            for sheet in EqualizerViewController.openSheets.allObjects {
+                sheet.reload()
+            }
         }
     }
 
     /// Gives the slot back once no sheet is using it.
     private func releaseEngineHandler() {
-        EqualizerViewController.liveCount = max(EqualizerViewController.liveCount - 1, 0)
-        guard EqualizerViewController.liveCount == 0 else { return }
+        EqualizerViewController.openSheets.remove(self)
+        guard EqualizerViewController.openSheets.allObjects.isEmpty else { return }
+        guard EqualizerViewController.isHandlerInstalled else { return }
+        EqualizerViewController.isHandlerInstalled = false
         engine.onChange = EqualizerViewController.baseHandler
         EqualizerViewController.baseHandler = nil
     }

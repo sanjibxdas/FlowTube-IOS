@@ -53,7 +53,7 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
-            build | tee build.log | xcpretty || { tail -n 400 build.log; exit 1; }
+            build 2>&1 | tee build.log || { echo '--- build failed ---'; tail -n 400 build.log; exit 1; }
 
       - name: Package .ipa
         run: |

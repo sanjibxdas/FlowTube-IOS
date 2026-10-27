@@ -1,6 +1,7 @@
 name: Flow
 options:
   bundleIdPrefix: org.flowtube
+  objectVersion: 56
   deploymentTarget:
     iOS: "12.0"
   createIntermediateGroups: true
@@ -34,7 +35,6 @@ targets:
         INFOPLIST_FILE: Flow/Resources/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         SWIFT_VERSION: "5.0"
-        SWIFT_OPTIMIZATION_LEVEL: "-Onone"
         TARGETED_DEVICE_FAMILY: "1,2"
         ARCHS: arm64
         VALID_ARCHS: arm64

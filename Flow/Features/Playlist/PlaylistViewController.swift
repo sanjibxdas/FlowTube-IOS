@@ -32,7 +32,14 @@ final class PlaylistViewController: UIViewController {
         title: "This playlist is empty",
         message: "Add videos from the video player to build your playlist"
     ))
-    private let sortButton = FlowIconButton.make(.sort, color: .clear, size: 22.0, target: nil, action: nil)
+    /// Built without a target: the action is attached once the view is loaded, because a stored
+    /// property cannot refer to `self` while the controller is still being initialised.
+    private let sortButton: FlowIconButton = {
+        let button = FlowIconButton()
+        button.configure(icon: .sort, color: .clear, size: 22.0)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        return button
+    }()
 
     private var stored: StoredPlaylist?
     private var remote: PlaylistPage?

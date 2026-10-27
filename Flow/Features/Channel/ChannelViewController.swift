@@ -27,7 +27,14 @@ final class ChannelViewController: UIViewController {
     private let spinner = UIActivityIndicatorView(style: .gray)
     private let errorState = FlowEmptyState.make(kind: .error, actionTitle: "Retry")
     private let emptyState = FlowEmptyState.make(kind: .noResults)
-    private let sortButton = FlowIconButton.make(.sort, color: .clear, size: 22.0, target: nil, action: nil)
+    /// Built without a target: the action is attached once the view is loaded, because a stored
+    /// property cannot refer to `self` while the controller is still being initialised.
+    private let sortButton: FlowIconButton = {
+        let button = FlowIconButton()
+        button.configure(icon: .sort, color: .clear, size: 22.0)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        return button
+    }()
 
     private var page: ChannelPage?
     private var tabTitles: [String] = []
