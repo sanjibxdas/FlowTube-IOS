@@ -1,0 +1,82 @@
+name: iOS build (.ipa)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  audit:
+    name: Static audit (iOS 12 API rules)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit Swift sources
+        run: python3 scripts/audit.py
+
+  build:
+    name: Build unsigned .ipa
+    needs: audit
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select an Xcode that still supports iOS 12
+        run: |
+          for v in 15.4 15.2 15.0.1 14.3.1 14.2; do
+            if [ -d "/Applications/Xcode_$v.app" ]; then
+              sudo xcode-select -s "/Applications/Xcode_$v.app"
+              echo "Using Xcode $v"
+              break
+            fi
+          done
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i iphoneos || true
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec project.yml
+
+      - name: Build
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Flow.xcodeproj \
+            -scheme Flow \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            IPHONEOS_DEPLOYMENT_TARGET=12.0 \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee build.log | xcpretty || { tail -n 400 build.log; exit 1; }
+
+      - name: Package .ipa
+        run: |
+          APP="$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -n 1)"
+          echo "Found app: $APP"
+          rm -rf Payload Flow.ipa
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "Payload/$(basename "$APP")/Info.plist"
+          zip -qry Flow.ipa Payload
+          ls -lh Flow.ipa
+
+      - name: Upload .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: Flow-ipa
+          path: Flow.ipa
+          retention-days: 30
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          retention-days: 7
