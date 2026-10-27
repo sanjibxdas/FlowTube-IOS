@@ -157,7 +157,7 @@ final class PlaylistViewController: UIViewController {
 
         sortButton.accessibilityLabel = "Playlist sort options"
         sortButton.addTarget(self, action: #selector(handleSort), for: .touchUpInside)
-        sortButton.widthAnchor.constraint(equalToConstant: 40.0).isActive = true
+        sortButton.widthAnchor.constraint(equalToConstant: 44.0).isActive = true
 
         // The header scrolls with the list, so the cover, the search field and the sort button
         // share one table header rather than sitting in fixed chrome above it.

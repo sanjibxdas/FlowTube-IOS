@@ -5,8 +5,8 @@ import UIKit
 ///
 /// The Android screen is a plain adaptive grid. The iOS port keeps the grid and adds the preview the
 /// Android card performs on long press: holding a tile opens a muted, looping player over the grid,
-/// and letting go closes it. Tapping opens the Short in the Shorts tab; the tile's menu removes it
-/// from the saved list.
+/// and letting go closes it. Tapping opens the Short in the Shorts tab; the tile's menu can preview
+/// or remove it.
 final class SavedShortsViewController: UIViewController {
 
     /// One saved Short, as the store returns it.
@@ -54,6 +54,12 @@ final class SavedShortsViewController: UIViewController {
     required init?(coder: NSCoder) {
         layout.minimumLineSpacing = FlowSpacing.md
         layout.minimumInteritemSpacing = FlowSpacing.md
+        layout.sectionInset = UIEdgeInsets(
+            top: FlowSpacing.md,
+            left: FlowSpacing.screenMargin,
+            bottom: FlowSpacing.xxl,
+            right: FlowSpacing.screenMargin
+        )
         collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
         super.init(coder: coder)
     }
@@ -87,6 +93,13 @@ final class SavedShortsViewController: UIViewController {
         endPreview()
     }
 
+    override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        super.viewWillTransition(to: size, with: coordinator)
+        coordinator.animate(alongsideTransition: { _ in
+            self.layout.invalidateLayout()
+        }, completion: nil)
+    }
+
     // MARK: - Build
 
     private func buildViews() {
@@ -101,11 +114,9 @@ final class SavedShortsViewController: UIViewController {
         )
         view.addSubview(collectionView)
 
-        emptyState.translatesAutoresizingMaskIntoConstraints = false
         emptyState.isHidden = true
         view.addSubview(emptyState)
 
-        preview.translatesAutoresizingMaskIntoConstraints = false
         preview.alpha = 0.0
         preview.isHidden = true
         preview.onClose = { [weak self] in
@@ -191,14 +202,18 @@ final class SavedShortsViewController: UIViewController {
         }
     }
 
+    /// Shows the preview immediately with the Short's still, then swaps in the stream once it
+    /// resolves. A failed lookup closes the preview rather than leaving an empty black panel up.
     private func beginPreview(_ short: SavedShort) {
         guard previewVideoId != short.videoId else { return }
         previewVideoId = short.videoId
-        preview.show(title: short.title, channelName: short.channelName, thumbnailUrl: short.thumbnailUrl)
+        preview.show(
+            title: short.title,
+            channelName: short.channelName,
+            thumbnailUrl: short.thumbnailUrl
+        )
         previewWorkItem?.cancel()
 
-        // The stream is resolved before the player is shown, so a failed lookup closes the preview
-        // rather than leaving an empty black panel on screen.
         let work = DispatchWorkItem { [weak self] in
             guard let self = self, self.previewVideoId == short.videoId else { return }
             FlowApp.shared.youtubeAPI.player(videoId: short.videoId) { result in
@@ -236,14 +251,17 @@ final class SavedShortsViewController: UIViewController {
             FlowActionSheetContent.Action(title: "Play", icon: .play) { [weak self] in
                 self?.open(short)
             },
+            FlowActionSheetContent.Action(title: "Preview", icon: .shorts) { [weak self] in
+                self?.beginPreview(short)
+            },
             FlowActionSheetContent.Action(
                 title: "Remove from Saved Shorts",
                 icon: .trash,
                 isDestructive: true
             ) { [weak self] in
                 SavedShortsStore.shared.remove(videoId: short.videoId)
-                self?.reload()
                 FlowSnackbar.show("Removed from Saved Shorts")
+                self?.reload()
             },
         ]
         LibraryMenu.present(from: self, title: short.title, actions: actions)
@@ -287,19 +305,28 @@ extension SavedShortsViewController: UICollectionViewDataSource, UICollectionVie
         layout collectionViewLayout: UICollectionViewLayout,
         sizeForItemAt indexPath: IndexPath
     ) -> CGSize {
-        let available = collectionView.bounds.width
-            - FlowSpacing.screenMargin * 2.0
-            - FlowSpacing.md
+        let available = collectionView.bounds.width - FlowSpacing.screenMargin * 2.0
+        guard available > 0.0 else {
+            return CGSize(width: 160.0, height: 160.0 * 16.0 / 9.0 + 52.0)
+        }
         let columns: CGFloat = available > 640.0 ? 4.0 : (available > 420.0 ? 3.0 : 2.0)
         let width = floor((available - FlowSpacing.md * (columns - 1.0)) / columns)
-        // Shorts are 9:16, with the two text lines underneath.
-        return CGSize(width: max(width, 120.0), height: max(width, 120.0) * 16.0 / 9.0 + 48.0)
+        // Shorts are 9:16, with the title and channel lines underneath.
+        return CGSize(width: width, height: width * 16.0 / 9.0 + 52.0)
     }
 
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         collectionView.deselectItem(at: indexPath, animated: true)
         guard let short = shorts.element(at: indexPath.item) else { return }
         open(short)
+    }
+
+    func collectionView(
+        _ collectionView: UICollectionView,
+        willDisplay cell: UICollectionViewCell,
+        forItemAt indexPath: IndexPath
+    ) {
+        (cell as? SavedShortCell)?.applyTheme()
     }
 }
 
@@ -313,7 +340,7 @@ final class SavedShortCell: UICollectionViewCell {
     private let thumbnail = AsyncImageView.make(cornerRadius: FlowShapes.medium)
     private let titleLabel = UILabel()
     private let channelLabel = UILabel()
-    private let moreButton = FlowIconButton.make(.more, color: .white, size: 18.0, target: nil, action: nil)
+    private let moreButton = FlowIconButton()
     private let playGlyph = FlowIconView()
 
     /// Called when the tile's menu button is tapped.
@@ -342,6 +369,7 @@ final class SavedShortCell: UICollectionViewCell {
         contentView.addSubview(playGlyph)
 
         moreButton.translatesAutoresizingMaskIntoConstraints = false
+        moreButton.configure(icon: .more, color: .white, size: 18.0)
         moreButton.addTarget(self, action: #selector(handleMore), for: .touchUpInside)
         moreButton.accessibilityLabel = "Short actions"
         contentView.addSubview(moreButton)
@@ -367,10 +395,10 @@ final class SavedShortCell: UICollectionViewCell {
             playGlyph.widthAnchor.constraint(equalToConstant: 28.0),
             playGlyph.heightAnchor.constraint(equalToConstant: 28.0),
 
-            moreButton.trailingAnchor.constraint(equalTo: thumbnail.trailingAnchor, constant: -FlowSpacing.xs),
-            moreButton.topAnchor.constraint(equalTo: thumbnail.topAnchor, constant: FlowSpacing.xs),
-            moreButton.widthAnchor.constraint(equalToConstant: 32.0),
-            moreButton.heightAnchor.constraint(equalToConstant: 32.0),
+            moreButton.trailingAnchor.constraint(equalTo: thumbnail.trailingAnchor, constant: -FlowSpacing.xxs),
+            moreButton.topAnchor.constraint(equalTo: thumbnail.topAnchor, constant: FlowSpacing.xxs),
+            moreButton.widthAnchor.constraint(equalToConstant: 36.0),
+            moreButton.heightAnchor.constraint(equalToConstant: 36.0),
 
             titleLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             titleLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
@@ -385,7 +413,7 @@ final class SavedShortCell: UICollectionViewCell {
 
     /// Sets the tile's content.
     func configure(thumbnailUrl: String, title: String, channelName: String, savedAt: Date) {
-        thumbnail.setImage(url: thumbnailUrl, targetSize: CGSize(width: 320.0, height: 568.0))
+        thumbnail.setImage(url: thumbnailUrl, targetSize: CGSize(width: 360.0, height: 640.0))
         titleLabel.text = title
         var parts: [String] = []
         if !channelName.isEmpty {
@@ -394,6 +422,7 @@ final class SavedShortCell: UICollectionViewCell {
         parts.append(Formatters.relativeDate(savedAt))
         channelLabel.text = parts.joined(separator: " · ")
         accessibilityLabel = "\(title), \(channelLabel.text ?? "")"
+        accessibilityHint = "Hold to preview"
     }
 
     /// Repaints the tile in the current palette.
@@ -428,10 +457,11 @@ final class ShortsPreviewView: UIView {
 
     private let backdrop = UIView()
     private let playerContainer = UIView()
+    private let still = AsyncImageView.make()
+    private let spinner = UIActivityIndicatorView(style: .white)
     private let titleLabel = UILabel()
     private let channelLabel = UILabel()
-    private let spinner = UIActivityIndicatorView(style: .white)
-    private let closeButton = FlowIconButton.make(.close, color: .white, size: 22.0, target: nil, action: nil)
+    private let closeButton = FlowIconButton()
 
     private var player: AVPlayer?
     private var playerLayer: AVPlayerLayer?
@@ -451,7 +481,7 @@ final class ShortsPreviewView: UIView {
     }
 
     deinit {
-        tearDown()
+        releasePlayer()
     }
 
     private func commonInit() {
@@ -461,8 +491,7 @@ final class ShortsPreviewView: UIView {
         backdrop.translatesAutoresizingMaskIntoConstraints = false
         backdrop.backgroundColor = UIColor.black.withAlphaComponent(0.82)
         addSubview(backdrop)
-        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap))
-        backdrop.addGestureRecognizer(tap)
+        backdrop.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTap)))
 
         playerContainer.translatesAutoresizingMaskIntoConstraints = false
         playerContainer.backgroundColor = .black
@@ -470,9 +499,12 @@ final class ShortsPreviewView: UIView {
         playerContainer.layer.masksToBounds = true
         addSubview(playerContainer)
 
+        still.translatesAutoresizingMaskIntoConstraints = false
+        still.contentMode = .scaleAspectFill
+        playerContainer.addSubview(still)
+
         spinner.translatesAutoresizingMaskIntoConstraints = false
         spinner.hidesWhenStopped = true
-        spinner.startAnimating()
         playerContainer.addSubview(spinner)
 
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -488,6 +520,7 @@ final class ShortsPreviewView: UIView {
         addSubview(channelLabel)
 
         closeButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.configure(icon: .close, color: .white, size: 22.0)
         closeButton.addTarget(self, action: #selector(handleTap), for: .touchUpInside)
         closeButton.accessibilityLabel = "Close preview"
         addSubview(closeButton)
@@ -503,11 +536,18 @@ final class ShortsPreviewView: UIView {
             playerContainer.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.62),
             playerContainer.heightAnchor.constraint(equalTo: playerContainer.widthAnchor, multiplier: 16.0 / 9.0),
 
+            still.leadingAnchor.constraint(equalTo: playerContainer.leadingAnchor),
+            still.trailingAnchor.constraint(equalTo: playerContainer.trailingAnchor),
+            still.topAnchor.constraint(equalTo: playerContainer.topAnchor),
+            still.bottomAnchor.constraint(equalTo: playerContainer.bottomAnchor),
+
             spinner.centerXAnchor.constraint(equalTo: playerContainer.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: playerContainer.centerYAnchor),
 
             closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -FlowSpacing.md),
             closeButton.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor, constant: FlowSpacing.md),
+            closeButton.widthAnchor.constraint(equalToConstant: 44.0),
+            closeButton.heightAnchor.constraint(equalToConstant: 44.0),
 
             titleLabel.leadingAnchor.constraint(equalTo: playerContainer.leadingAnchor),
             titleLabel.trailingAnchor.constraint(equalTo: playerContainer.trailingAnchor),
@@ -520,10 +560,13 @@ final class ShortsPreviewView: UIView {
         applyTheme()
     }
 
-    /// Shows the preview with its metadata, before the stream has resolved.
+    /// Shows the preview with the Short's still, before the stream has resolved.
     func show(title: String, channelName: String, thumbnailUrl: String) {
+        releasePlayer()
         titleLabel.text = title
         channelLabel.text = channelName
+        still.setImage(url: thumbnailUrl, targetSize: CGSize(width: 360.0, height: 640.0))
+        still.isHidden = false
         spinner.startAnimating()
         isHidden = false
         FlowMotion.animate {
@@ -531,18 +574,19 @@ final class ShortsPreviewView: UIView {
         }
     }
 
-    /// Starts playing a resolved item, muted and looping.
+    /// Starts playing a resolved item, muted and looping, over the still.
     func play(item: AVPlayerItem) {
-        tearDownPlayer()
+        releasePlayer()
         let player = AVPlayer(playerItem: item)
         player.isMuted = true
         player.actionAtItemEnd = .none
         let layer = AVPlayerLayer(player: player)
         layer.videoGravity = .resizeAspectFill
         layer.frame = playerContainer.bounds
-        playerContainer.layer.addSublayer(layer)
+        playerContainer.layer.insertSublayer(layer, below: still.layer)
         self.player = player
         playerLayer = layer
+        still.isHidden = true
         spinner.stopAnimating()
 
         endObserver = NotificationCenter.default.addObserver(
@@ -563,14 +607,16 @@ final class ShortsPreviewView: UIView {
             self.alpha = 0.0
         }, completion: { _ in
             self.isHidden = true
-            self.tearDownPlayer()
+            self.releasePlayer()
+            self.still.clearImage()
             self.titleLabel.text = nil
             self.channelLabel.text = nil
         })
     }
 
-    /// Repaints the preview in the current palette. The player stays black whatever the theme.
+    /// Repaints the preview in the current palette. The player itself stays black in every theme.
     func applyTheme() {
+        still.applyTheme()
         titleLabel.textColor = .white
         channelLabel.textColor = UIColor.white.withAlphaComponent(0.8)
         closeButton.setIconColor(.white)
@@ -581,7 +627,7 @@ final class ShortsPreviewView: UIView {
         playerLayer?.frame = playerContainer.bounds
     }
 
-    private func tearDownPlayer() {
+    private func releasePlayer() {
         if let observer = endObserver {
             NotificationCenter.default.removeObserver(observer)
         }
@@ -590,17 +636,7 @@ final class ShortsPreviewView: UIView {
         player = nil
         playerLayer?.removeFromSuperlayer()
         playerLayer = nil
-    }
-
-    private func tearDown() {
-        if let observer = endObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        endObserver = nil
-        player?.pause()
-        player = nil
-        playerLayer?.removeFromSuperlayer()
-        playerLayer = nil
+        spinner.stopAnimating()
     }
 
     @objc private func handleTap() {

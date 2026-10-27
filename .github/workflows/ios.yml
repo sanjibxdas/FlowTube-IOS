@@ -37,7 +37,14 @@ jobs:
         run: brew install xcodegen
 
       - name: Generate Xcode project
-        run: xcodegen generate --spec project.yml
+        run: |
+          xcodegen generate --spec project.yml
+          # XcodeGen 2.46 writes the Xcode 16 project format (objectVersion 77).
+          # Xcode 15.4 is the last Xcode that can target iOS 12, so downgrade the format.
+          PBX=Flow.xcodeproj/project.pbxproj
+          sed -i '' 's/objectVersion = 77;/objectVersion = 56;/g' "$PBX"
+          sed -i '' '/preferredProjectObjectVersion/d' "$PBX"
+          grep -m1 objectVersion "$PBX"
 
       - name: Build
         run: |

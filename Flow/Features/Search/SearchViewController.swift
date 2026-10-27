@@ -120,11 +120,11 @@ final class SearchViewController: UIViewController {
 
             filterButton.trailingAnchor.constraint(equalTo: viewModeButton.leadingAnchor),
             filterButton.centerYAnchor.constraint(equalTo: searchBar.centerYAnchor),
-            filterButton.widthAnchor.constraint(equalToConstant: 40.0),
+            filterButton.widthAnchor.constraint(equalToConstant: 44.0),
 
             viewModeButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -FlowSpacing.xs),
             viewModeButton.centerYAnchor.constraint(equalTo: searchBar.centerYAnchor),
-            viewModeButton.widthAnchor.constraint(equalToConstant: 40.0),
+            viewModeButton.widthAnchor.constraint(equalToConstant: 44.0),
         ])
     }
 

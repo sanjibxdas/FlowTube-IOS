@@ -181,7 +181,7 @@ final class ChannelViewController: UIViewController {
 
             sortButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -FlowSpacing.sm),
             sortButton.centerYAnchor.constraint(equalTo: tabs.centerYAnchor),
-            sortButton.widthAnchor.constraint(equalToConstant: 40.0),
+            sortButton.widthAnchor.constraint(equalToConstant: 44.0),
 
             collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),

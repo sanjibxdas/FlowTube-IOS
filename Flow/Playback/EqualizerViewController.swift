@@ -441,19 +441,26 @@ final class EqBandRowView: UIView {
 
     /// Sets the controls from a band without notifying the owner.
     func update(band: EqBand) {
-        frequencyLabel.text = EqBandRowView.frequencyText(band.frequency)
+        let frequency = EqBandRowView.frequencyText(band.frequency)
+        frequencyLabel.text = frequency
         gainSlider.value = Float(band.gain)
         gainLabel.text = EqBandRowView.gainText(band.gain)
         qSlider.value = Float(band.q)
         qLabel.text = EqBandRowView.qText(band.q)
         toggle.isOn = band.enabled
 
+        // Each control names its own band, so a rotor user does not hear five identical "Gain".
+        gainSlider.accessibilityLabel = "\(frequency) gain"
+        gainSlider.accessibilityValue = EqBandRowView.gainText(band.gain)
+        qSlider.accessibilityLabel = "\(frequency) bandwidth"
+        qSlider.accessibilityValue = EqBandRowView.qText(band.q)
+        toggle.accessibilityLabel = "\(frequency) band"
+
         let alpha: CGFloat = band.enabled ? 1.0 : 0.45
         gainSlider.alpha = alpha
         qSlider.alpha = alpha
         gainLabel.alpha = alpha
         qLabel.alpha = alpha
-        accessibilityLabel = "\(frequencyLabel.text ?? ""), \(gainLabel.text ?? "")"
     }
 
     func applyTheme() {
@@ -470,12 +477,16 @@ final class EqBandRowView: UIView {
     }
 
     @objc private func gainChanged() {
-        gainLabel.text = EqBandRowView.gainText(Double(gainSlider.value))
+        let text = EqBandRowView.gainText(Double(gainSlider.value))
+        gainLabel.text = text
+        gainSlider.accessibilityValue = text
         onGainChange?(gainSlider.value)
     }
 
     @objc private func qChanged() {
-        qLabel.text = EqBandRowView.qText(Double(qSlider.value))
+        let text = EqBandRowView.qText(Double(qSlider.value))
+        qLabel.text = text
+        qSlider.accessibilityValue = text
         onQChange?(qSlider.value)
     }
 
@@ -524,7 +535,9 @@ final class EqSliderRow: UIView {
         get { return slider.value }
         set {
             slider.value = newValue
-            valueLabel.text = EqBandRowView.gainText(Double(newValue))
+            let text = EqBandRowView.gainText(Double(newValue))
+            valueLabel.text = text
+            slider.accessibilityValue = text
         }
     }
 
@@ -589,7 +602,9 @@ final class EqSliderRow: UIView {
     }
 
     @objc private func changed() {
-        valueLabel.text = EqBandRowView.gainText(Double(slider.value))
+        let text = EqBandRowView.gainText(Double(slider.value))
+        valueLabel.text = text
+        slider.accessibilityValue = text
         onChange?(slider.value)
     }
 }
