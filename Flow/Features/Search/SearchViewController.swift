@@ -22,9 +22,9 @@ final class SearchViewController: UIViewController {
     private let searchBar = SearchBarView()
     private let suggestionsController = SearchSuggestionsViewController()
     private let resultsController = SearchResultsController()
-    private let filterButton = FlowIconButton.make(.filter, color: .clear, size: 22.0, target: nil, action: nil)
-    private let viewModeButton = FlowIconButton.make(.library, color: .clear, size: 22.0, target: nil, action: nil)
-    private let backButton = FlowIconButton.make(.back, color: .clear, size: 22.0, target: nil, action: nil)
+    private let filterButton = SearchViewController.makeChromeButton(.filter)
+    private let viewModeButton = SearchViewController.makeChromeButton(.library)
+    private let backButton = SearchViewController.makeChromeButton(.back)
     private let debouncer = FlowDebouncer(interval: 0.28)
     private var isShowingResults = false
     private var isGrid = true

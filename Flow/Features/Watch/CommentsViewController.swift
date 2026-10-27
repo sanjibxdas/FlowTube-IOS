@@ -1,31 +1,20 @@
 import UIKit
 
-/// A video's comments: the sort chips, the threads with their replies, and the paging.
+/// A video's comment section.
 ///
-/// The screen owns its own paging because comments arrive as a continuation chain rather than as a
-/// page of results: the first request spends the token the watch page carried, and every page after
-/// that spends the token the previous page returned. Replies are a second chain hanging off one
-/// comment, loaded on demand so a thread with a thousand replies costs nothing until it is opened.
+/// The list is the Android `FlowCommentsList` ported to a plain `UITableView`: a 40-point avatar,
+/// the author with YouTube's `@` prefix, the relative time, the comment body, the like count and,
+/// for a top-level comment, a control that loads and reveals its replies. Replies are fetched with
+/// the comment's own continuation and are indented under their parent, exactly as the Compose list
+/// draws them.
+///
+/// Ordering is client-side. YouTube serves one order per continuation and the app has no account,
+/// so the initial continuation is the "Top" order; "Newest" and "Oldest" re-order the pages that
+/// have been loaded. That is the same compromise the Android app makes for its "Oldest" chip, and
+/// it is why switching the sort does not refetch.
 final class CommentsViewController: UIViewController {
 
-    // MARK: - Navigation
-
-    /// Called with the channel id the viewer tapped.
-    var onOpenChannel: ((String) -> Void)?
-    /// Called when the viewer taps a timestamp inside a comment.
-    var onSeek: ((TimeInterval) -> Void)?
-    /// Called when the viewer closes the screen.
-    var onClose: (() -> Void)?
-
-    // MARK: - Sorting
-
-    /// The orders the chips offer.
-    ///
-    /// YouTube serves two orders and no third: Top and Newest are separate continuations, and Oldest
-    /// is the chronological one read backwards. The facade this app talks to exposes a single
-    /// comment continuation, so Top is the order the server returned and Newest and Oldest are
-    /// applied locally over the pages loaded so far — the same result for the first page, and a
-    /// stable one for the rest.
+    /// The orders the chips offer, matching `CommentSortFilter` in the Android app.
     enum Sort: Int, CaseIterable {
         case top
         case newest
@@ -40,56 +29,65 @@ final class CommentsViewController: UIViewController {
         }
     }
 
-    // MARK: - Rows
+    // MARK: - Navigation
 
-    private enum Row {
-        case comment(Comment, depth: Int)
-        case moreReplies(String)
-        case loadMorePage
+    /// Called with a comment author's channel id when their avatar or name is tapped.
+    var onOpenChannel: ((String) -> Void)?
+    /// Called with a timestamp when a comment contains one. The watch screen seeks the player.
+    var onSeek: ((TimeInterval) -> Void)?
+    /// Called when the viewer closes a comments screen that was presented rather than pushed.
+    var onClose: (() -> Void)?
 
-        var id: String {
-            switch self {
-            case .comment(let comment, let depth): return "c:\(depth):\(comment.id)"
-            case .moreReplies(let id): return "r:\(id)"
-            case .loadMorePage: return "page"
-            }
-        }
-    }
+    // MARK: - Dependencies
 
-    private struct Replies {
-        var items: [Comment] = []
-        var continuation: String?
-        var isLoading = false
-        var isExpanded = false
-    }
+    private let videoId: String
+    private let api: YouTubeAPI
+    private let initialContinuation: String?
+
+    // MARK: - Views
+
+    private let sortRow = FlowChipRow()
+    private let separator = UIView.hairline()
+    private let tableView = UITableView(frame: .zero, style: .plain)
+    private let spinner = UIActivityIndicatorView(style: .gray)
+    private let footerSpinner = UIActivityIndicatorView(style: .gray)
+    private let emptyState = FlowEmptyState.make(kind: .noComments)
+    private let errorState = FlowEmptyState.make(kind: .error, actionTitle: "Retry")
 
     // MARK: - State
 
-    private let videoId: String
-    private let initialContinuation: String?
-    private let api: YouTubeAPI
+    /// One row of the flattened list. A reply is a row of its own so the table can recycle it.
+    private struct Row {
+        enum Kind {
+            case comment
+            case reply
+            case moreReplies
+        }
 
-    private let headerView = UIView()
-    private let backButton = FlowIconButton.make(.back, color: .clear, size: 22.0, target: nil, action: nil)
-    private let titleLabel = UILabel()
-    private let totalLabel = UILabel()
-    private let chipsRow = FlowChipRow()
-    private let tableView = UITableView(frame: .zero, style: .plain)
-    private let spinner = UIActivityIndicatorView(style: .gray)
-    private let emptyState = FlowEmptyState.make(kind: .noComments)
-    private let errorState = FlowEmptyState.make(kind: .error, actionTitle: "Retry")
+        let kind: Kind
+        let comment: Comment?
+        let depth: Int
+        let parentId: String
+    }
 
     private var comments: [Comment] = []
     private var rows: [Row] = []
     private var continuation: String?
+    private var totalText: String?
+    private var sort: Sort = .top
     private var isLoading = false
     private var isLoadingMore = false
-    private var sort: Sort = .top
-    private var timedOnly = false
-    private var expanded: Set<String> = []
-    private var replies: [String: Replies] = [:]
-    private var totalText: String?
-    private var loadToken = 0
+    private var hasLoaded = false
+
+    /// Comments whose body is shown in full.
+    private var expandedText: Set<String> = []
+    /// Comments whose replies are on screen.
+    private var expandedReplies: Set<String> = []
+    /// Comments whose reply request is in flight.
+    private var loadingReplies: Set<String> = []
+    /// The continuation that loads the next page of each comment's replies.
+    private var replyContinuations: [String: String] = [:]
+
     private var themeToken: ObservationToken?
 
     // MARK: - Construction
@@ -99,6 +97,7 @@ final class CommentsViewController: UIViewController {
         self.initialContinuation = continuation
         self.api = api
         super.init(nibName: nil, bundle: nil)
+        title = "Comments"
     }
 
     required init?(coder: NSCoder) {
@@ -106,6 +105,7 @@ final class CommentsViewController: UIViewController {
         initialContinuation = nil
         api = YouTubeAPI()
         super.init(coder: coder)
+        title = "Comments"
     }
 
     deinit {
@@ -117,88 +117,49 @@ final class CommentsViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = FlowTheme.shared.background
-        buildHeader()
-        buildChips()
+        buildSortRow()
         buildTable()
-        buildOverlays()
+        buildStates()
+        installCloseButtonIfNeeded()
         themeToken = FlowEventBus.shared.on("theme") { [weak self] _ in
             self?.applyTheme()
         }
         applyTheme()
-        load()
+        loadFirstPage()
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        navigationController?.setNavigationBarHidden(true, animated: animated)
-    }
-
-    override var preferredStatusBarStyle: UIStatusBarStyle {
-        return FlowTheme.shared.isDark ? .lightContent : .default
+        navigationController?.setNavigationBarHidden(false, animated: animated)
     }
 
     // MARK: - Build
 
-    private func buildHeader() {
-        headerView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(headerView)
-
-        backButton.translatesAutoresizingMaskIntoConstraints = false
-        backButton.accessibilityLabel = "Back"
-        backButton.addTarget(self, action: #selector(handleClose), for: .touchUpInside)
-        headerView.addSubview(backButton)
-
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = FlowTypography.titleMedium
-        titleLabel.text = "Comments"
-        headerView.addSubview(titleLabel)
-
-        totalLabel.translatesAutoresizingMaskIntoConstraints = false
-        totalLabel.font = FlowTypography.labelMedium
-        totalLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        headerView.addSubview(totalLabel)
-
-        NSLayoutConstraint.activate([
-            headerView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            headerView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            headerView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            headerView.heightAnchor.constraint(equalToConstant: FlowSpacing.toolbarHeight),
-
-            backButton.leadingAnchor.constraint(equalTo: headerView.leadingAnchor, constant: FlowSpacing.xs),
-            backButton.centerYAnchor.constraint(equalTo: headerView.centerYAnchor),
-            backButton.widthAnchor.constraint(equalToConstant: 44.0),
-            backButton.heightAnchor.constraint(equalToConstant: 44.0),
-
-            titleLabel.leadingAnchor.constraint(equalTo: backButton.trailingAnchor, constant: FlowSpacing.xs),
-            titleLabel.centerYAnchor.constraint(equalTo: headerView.centerYAnchor),
-
-            totalLabel.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: FlowSpacing.md),
-            totalLabel.trailingAnchor.constraint(lessThanOrEqualTo: headerView.trailingAnchor, constant: -FlowSpacing.screenMargin),
-            totalLabel.firstBaselineAnchor.constraint(equalTo: titleLabel.firstBaselineAnchor),
-        ])
-    }
-
-    private func buildChips() {
-        chipsRow.translatesAutoresizingMaskIntoConstraints = false
-        chipsRow.setTitles(Sort.allCases.map { $0.title } + ["Timed"], selectedIndex: 0)
-        chipsRow.onSelect = { [weak self] index in
+    private func buildSortRow() {
+        sortRow.translatesAutoresizingMaskIntoConstraints = false
+        sortRow.setTitles(Sort.allCases.map { $0.title }, selectedIndex: sort.rawValue)
+        sortRow.onSelect = { [weak self] index in
             guard let self = self else { return }
-            if index < Sort.allCases.count {
-                self.sort = Sort(rawValue: index) ?? .top
-            } else {
-                self.timedOnly.toggle()
-            }
-            self.refreshChipSelection()
+            let chosen = Sort(rawValue: index) ?? .top
+            guard chosen != self.sort else { return }
+            self.sort = chosen
             self.rebuildRows()
-            self.tableView.reloadData()
+            self.tableView.setContentOffset(.zero, animated: false)
         }
-        view.addSubview(chipsRow)
+        view.addSubview(sortRow)
+
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(separator)
 
         NSLayoutConstraint.activate([
-            chipsRow.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: FlowSpacing.screenMargin),
-            chipsRow.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -FlowSpacing.screenMargin),
-            chipsRow.topAnchor.constraint(equalTo: headerView.bottomAnchor),
-            chipsRow.heightAnchor.constraint(equalToConstant: 44.0),
+            sortRow.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            sortRow.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            sortRow.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            sortRow.heightAnchor.constraint(equalToConstant: 40.0),
+
+            separator.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            separator.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            separator.topAnchor.constraint(equalTo: sortRow.bottomAnchor),
         ])
     }
 
@@ -206,79 +167,85 @@ final class CommentsViewController: UIViewController {
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.backgroundColor = .clear
         tableView.separatorStyle = .none
-        tableView.estimatedRowHeight = 120.0
-        tableView.rowHeight = UITableView.automaticDimension
         tableView.dataSource = self
         tableView.delegate = self
-        tableView.prefetchDataSource = self
+        tableView.rowHeight = UITableView.automaticDimension
+        tableView.estimatedRowHeight = 132.0
+        tableView.keyboardDismissMode = .onDrag
+        tableView.contentInset = UIEdgeInsets(top: 0, left: 0, bottom: FlowSpacing.xxl, right: 0)
         tableView.register(CommentCell.self, forCellReuseIdentifier: CommentCell.reuseIdentifier)
-        tableView.register(CommentMoreCell.self, forCellReuseIdentifier: CommentMoreCell.reuseIdentifier)
+        tableView.register(CommentsMoreCell.self, forCellReuseIdentifier: CommentsMoreCell.reuseIdentifier)
         view.addSubview(tableView)
 
         NSLayoutConstraint.activate([
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.topAnchor.constraint(equalTo: chipsRow.bottomAnchor, constant: FlowSpacing.xs),
+            tableView.topAnchor.constraint(equalTo: separator.bottomAnchor),
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
     }
 
-    private func buildOverlays() {
+    private func buildStates() {
         spinner.translatesAutoresizingMaskIntoConstraints = false
         spinner.hidesWhenStopped = true
         view.addSubview(spinner)
-
-        emptyState.translatesAutoresizingMaskIntoConstraints = false
-        emptyState.isHidden = true
-        view.addSubview(emptyState)
-
-        errorState.translatesAutoresizingMaskIntoConstraints = false
-        errorState.isHidden = true
-        errorState.onAction = { [weak self] in self?.load() }
-        view.addSubview(errorState)
-
         NSLayoutConstraint.activate([
             spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-
-            emptyState.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            emptyState.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            emptyState.topAnchor.constraint(equalTo: chipsRow.bottomAnchor),
-            emptyState.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-
-            errorState.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            errorState.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            errorState.topAnchor.constraint(equalTo: chipsRow.bottomAnchor),
-            errorState.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
+
+        for state in [emptyState, errorState] {
+            state.isHidden = true
+            view.addSubviewForAutoLayout(state)
+            NSLayoutConstraint.activate([
+                state.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                state.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                state.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            ])
+        }
+        errorState.onAction = { [weak self] in
+            self?.loadFirstPage()
+        }
+
+        footerSpinner.hidesWhenStopped = true
+        footerSpinner.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: 56.0)
+    }
+
+    private func installCloseButtonIfNeeded() {
+        guard navigationController?.viewControllers.first === self else { return }
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            title: "Close",
+            style: .plain,
+            target: self,
+            action: #selector(handleClose)
+        )
     }
 
     // MARK: - Loading
 
-    private func load() {
+    private func loadFirstPage() {
         guard !isLoading else { return }
         isLoading = true
-        loadToken += 1
-        let token = loadToken
+        hasLoaded = false
         errorState.isHidden = true
         emptyState.isHidden = true
-        if comments.isEmpty {
-            spinner.startAnimating()
-        }
+        tableView.isHidden = false
+        spinner.startAnimating()
+
         api.comments(videoId: videoId, continuation: initialContinuation) { [weak self] result in
-            guard let self = self else { return }
             DispatchQueue.main.async {
-                guard token == self.loadToken else { return }
+                guard let self = self else { return }
                 self.isLoading = false
                 self.spinner.stopAnimating()
+                self.hasLoaded = true
                 switch result {
                 case .success(let page):
                     self.comments = page.comments
                     self.continuation = page.continuation
-                    self.totalText = page.totalText
-                    self.totalLabel.text = page.totalText
+                    if let total = page.totalText, !total.trimmed.isEmpty {
+                        self.totalText = total
+                    }
                     self.rebuildRows()
-                    self.tableView.reloadData()
                     self.updateEmptyState()
                 case .failure(let error):
                     self.showError(error)
@@ -288,142 +255,142 @@ final class CommentsViewController: UIViewController {
     }
 
     private func loadMore() {
-        guard let token = continuation, !token.isEmpty, !isLoadingMore, !isLoading else { return }
+        guard !isLoadingMore, !isLoading, let token = continuation, !token.isEmpty else { return }
         isLoadingMore = true
+        tableView.tableFooterView = footerSpinner
+        footerSpinner.startAnimating()
+
         api.comments(videoId: videoId, continuation: token) { [weak self] result in
-            guard let self = self else { return }
             DispatchQueue.main.async {
+                guard let self = self else { return }
                 self.isLoadingMore = false
-                guard case .success(let page) = result else { return }
-                var known = Set(self.comments.map { $0.id })
-                for comment in page.comments where !known.contains(comment.id) {
-                    self.comments.append(comment)
-                    known.insert(comment.id)
-                }
-                self.continuation = page.continuation
-                if let total = page.totalText, self.totalText == nil {
-                    self.totalText = total
-                    self.totalLabel.text = total
-                }
-                self.rebuildRows()
-                self.tableView.reloadData()
-            }
-        }
-    }
-
-    private func loadReplies(for comment: Comment) {
-        guard var state = replies[comment.id], !state.isLoading else { return }
-        guard let token = state.continuation ?? comment.continuation else {
-            state.isExpanded = true
-            replies[comment.id] = state
-            rebuildRows()
-            tableView.reloadData()
-            return
-        }
-        state.isLoading = true
-        replies[comment.id] = state
-        rebuildRows()
-        tableView.reloadData()
-
-        api.commentReplies(continuation: token) { [weak self] result in
-            guard let self = self else { return }
-            DispatchQueue.main.async {
-                var current = self.replies[comment.id] ?? Replies()
-                current.isLoading = false
+                self.footerSpinner.stopAnimating()
+                self.tableView.tableFooterView = nil
                 switch result {
                 case .success(let page):
-                    var known = Set(current.items.map { $0.id })
-                    for reply in page.comments where !known.contains(reply.id) {
-                        current.items.append(reply)
-                        known.insert(reply.id)
-                    }
-                    current.continuation = page.continuation
-                    current.isExpanded = true
+                    let known = Set(self.comments.map { $0.id })
+                    let fresh = page.comments.filter { !known.contains($0.id) }
+                    self.comments.append(contentsOf: fresh)
+                    self.continuation = page.continuation
+                    self.rebuildRows()
                 case .failure(let error):
                     FlowSnackbar.showError(error.displayMessage)
                 }
-                self.replies[comment.id] = current
-                self.rebuildRows()
-                self.tableView.reloadData()
             }
         }
     }
 
+    private func loadReplies(for commentId: String) {
+        guard !loadingReplies.contains(commentId) else { return }
+        guard let index = comments.firstIndex(where: { $0.id == commentId }) else { return }
+        let token = replyContinuations[commentId] ?? comments[index].continuation
+        guard let continuationToken = token, !continuationToken.isEmpty else { return }
+
+        loadingReplies.insert(commentId)
+        rebuildRows()
+
+        api.commentReplies(continuation: continuationToken) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.loadingReplies.remove(commentId)
+                switch result {
+                case .success(let page):
+                    self.mergeReplies(page, into: commentId)
+                case .failure(let error):
+                    FlowSnackbar.showError(error.displayMessage)
+                    self.rebuildRows()
+                }
+            }
+        }
+    }
+
+    private func mergeReplies(_ page: CommentsPage, into commentId: String) {
+        guard let index = comments.firstIndex(where: { $0.id == commentId }) else { return }
+        var parent = comments[index]
+        let known = Set(parent.replies.map { $0.id })
+        let fresh = page.comments.filter { !known.contains($0.id) }
+        parent.replies.append(contentsOf: fresh)
+        if parent.replyCount < parent.replies.count {
+            parent.replyCount = parent.replies.count
+        }
+        comments[index] = parent
+        replyContinuations[commentId] = page.continuation
+        expandedReplies.insert(commentId)
+        rebuildRows()
+    }
+
     private func showError(_ error: FlowError) {
-        if comments.isEmpty {
-            errorState.isHidden = false
-            errorState.configure(
-                kind: .custom(icon: .wifi, title: "Couldn't load comments", message: error.displayMessage),
-                actionTitle: "Retry"
+        tableView.isHidden = true
+        emptyState.isHidden = true
+        errorState.isHidden = false
+        errorState.configure(kind: .error, actionTitle: "Retry")
+        errorState.applyTheme()
+        FlowSnackbar.showError(error.displayMessage)
+    }
+
+    private func updateEmptyState() {
+        let empty = comments.isEmpty
+        emptyState.isHidden = !empty
+        tableView.isHidden = empty
+        if empty {
+            emptyState.configure(
+                kind: .custom(
+                    icon: .comment,
+                    title: "No comments yet",
+                    message: "Comments are turned off for this video, or none have been posted yet."
+                )
             )
-        } else {
-            FlowSnackbar.showError(error.displayMessage)
+            emptyState.applyTheme()
         }
     }
 
     // MARK: - Rows
 
-    private func refreshChipSelection() {
-        let chips = chipsRow.chips
-        for (index, chip) in chips.enumerated() {
-            if index < Sort.allCases.count {
-                chip.setSelected(index == sort.rawValue)
-            } else {
-                chip.setSelected(timedOnly)
+    private func rebuildRows() {
+        var built: [Row] = []
+        for comment in sortedComments() {
+            built.append(Row(kind: .comment, comment: comment, depth: 0, parentId: comment.id))
+            guard expandedReplies.contains(comment.id) else { continue }
+            for reply in comment.replies {
+                built.append(Row(kind: .reply, comment: reply, depth: 1, parentId: comment.id))
+            }
+            if replyContinuations[comment.id] != nil {
+                built.append(Row(kind: .moreReplies, comment: nil, depth: 1, parentId: comment.id))
             }
         }
+        rows = built
+        tableView.reloadData()
     }
 
-    /// The comments the chips select, out of the pages loaded so far.
-    private func visibleComments() -> [Comment] {
-        var filtered = comments
-        if timedOnly {
-            filtered = filtered.filter { !CommentTimestamps.links(in: $0.text).isEmpty }
-        }
-        let pinned = filtered.filter { $0.isPinned }
-        let unpinned = filtered.filter { !$0.isPinned }
-        let sorted: [Comment]
+    /// Pinned comments stay on top in every order, which is what YouTube itself does.
+    private func sortedComments() -> [Comment] {
+        let pinned = comments.filter { $0.isPinned }
+        let rest = comments.filter { !$0.isPinned }
+        let ordered: [Comment]
         switch sort {
         case .top:
-            sorted = unpinned
+            ordered = rest.sorted { $0.likeCount > $1.likeCount }
         case .newest:
-            sorted = unpinned.sorted { CommentTimestamps.age($0.publishedTime) < CommentTimestamps.age($1.publishedTime) }
+            ordered = rest.sorted { CommentsViewController.relativeSeconds($0.publishedTime) < CommentsViewController.relativeSeconds($1.publishedTime) }
         case .oldest:
-            sorted = unpinned.sorted { CommentTimestamps.age($0.publishedTime) > CommentTimestamps.age($1.publishedTime) }
+            ordered = rest.sorted { CommentsViewController.relativeSeconds($0.publishedTime) > CommentsViewController.relativeSeconds($1.publishedTime) }
         }
-        return pinned + sorted
+        return pinned + ordered
     }
 
-    private func rebuildRows() {
-        var result: [Row] = []
-        for comment in visibleComments() {
-            result.append(.comment(comment, depth: 0))
-            guard let state = replies[comment.id], state.isExpanded else { continue }
-            for reply in state.items {
-                result.append(.comment(reply, depth: 1))
-            }
-            if state.continuation != nil {
-                result.append(.moreReplies(comment.id))
-            }
-        }
-        if continuation != nil, !isLoading {
-            result.append(.loadMorePage)
-        }
-        rows = result
-        updateEmptyState()
-    }
-
-    private func updateEmptyState() {
-        let empty = comments.isEmpty && !isLoading
-        emptyState.isHidden = !empty
-        tableView.isHidden = empty
-        if empty {
-            emptyState.configure(
-                kind: timedOnly
-                    ? .custom(icon: .clock, title: "No timed comments", message: "None of these comments point at a moment in the video.")
-                    : .noComments
-            )
-        }
+    /// Turns YouTube's "3 weeks ago" into seconds, so the three orders share one comparator.
+    private static func relativeSeconds(_ text: String) -> TimeInterval {
+        let lower = text.lowercased().trimmed
+        let digits = lower.components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
+        let number = TimeInterval(digits) ?? 0.0
+        if lower.contains("second") { return number }
+        if lower.contains("minute") { return number * 60.0 }
+        if lower.contains("hour") { return number * 3_600.0 }
+        if lower.contains("day") { return number * 86_400.0 }
+        if lower.contains("week") { return number * 604_800.0 }
+        if lower.contains("month") { return number * 2_592_000.0 }
+        if lower.contains("year") { return number * 31_536_000.0 }
+        return TimeInterval.greatestFiniteMagnitude
     }
 
     // MARK: - Actions
@@ -433,66 +400,51 @@ final class CommentsViewController: UIViewController {
             close()
             return
         }
-        if let navigation = navigationController, navigation.viewControllers.first !== self {
-            navigation.popViewController(animated: true)
+        dismiss(animated: true, completion: nil)
+    }
+
+    private func toggleText(for commentId: String) {
+        if expandedText.contains(commentId) {
+            expandedText.remove(commentId)
         } else {
-            dismiss(animated: true, completion: nil)
+            expandedText.insert(commentId)
+        }
+        if let index = rows.firstIndex(where: { $0.comment?.id == commentId }) {
+            tableView.reloadRows(at: [IndexPath(row: index, section: 0)], with: .fade)
         }
     }
 
     private func toggleReplies(for comment: Comment) {
-        var state = replies[comment.id] ?? Replies()
-        if state.isExpanded {
-            state.isExpanded = false
-            replies[comment.id] = state
+        if expandedReplies.contains(comment.id) {
+            expandedReplies.remove(comment.id)
             rebuildRows()
-            tableView.reloadData()
             return
         }
-        if state.items.isEmpty {
-            replies[comment.id] = state
-            loadReplies(for: comment)
+        if !comment.replies.isEmpty {
+            expandedReplies.insert(comment.id)
+            rebuildRows()
             return
         }
-        state.isExpanded = true
-        replies[comment.id] = state
-        rebuildRows()
-        tableView.reloadData()
+        loadReplies(for: comment.id)
     }
 
-    private func toggleExpanded(_ comment: Comment) {
-        if expanded.contains(comment.id) {
-            expanded.remove(comment.id)
-        } else {
-            expanded.insert(comment.id)
-        }
-        if let index = rows.firstIndex(where: { row in
-            if case .comment(let value, let depth) = row, depth == 0, value.id == comment.id { return true }
-            return false
-        }) {
-            tableView.reloadRows(at: [IndexPath(row: index, section: 0)], with: .automatic)
-        }
-    }
-
-    // MARK: - Theming
+    // MARK: - Theme
 
     private func applyTheme() {
         let scheme = FlowTheme.shared.scheme
         view.backgroundColor = scheme.background
-        headerView.backgroundColor = scheme.background
-        titleLabel.textColor = scheme.onSurface
-        totalLabel.textColor = scheme.onSurfaceVariant
-        backButton.setIconColor(scheme.onSurface)
-        chipsRow.applyTheme()
+        tableView.backgroundColor = .clear
+        separator.backgroundColor = scheme.outlineVariant
+        sortRow.applyTheme()
         emptyState.applyTheme()
         errorState.applyTheme()
         tableView.reloadData()
     }
 }
 
-// MARK: - Data source
+// MARK: - Table data
 
-extension CommentsViewController: UITableViewDataSource {
+extension CommentsViewController: UITableViewDataSource, UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         return rows.count
@@ -502,206 +454,89 @@ extension CommentsViewController: UITableViewDataSource {
         guard let row = rows.element(at: indexPath.row) else {
             return UITableViewCell()
         }
-        switch row {
-        case .comment(let comment, let depth):
-            let cell = tableView.dequeueReusableCell(withIdentifier: CommentCell.reuseIdentifier, for: indexPath)
-            guard let commentCell = cell as? CommentCell else { return cell }
-            let state = replies[comment.id]
-            let model = CommentCell.Model(
+        switch row.kind {
+        case .moreReplies:
+            let cell = tableView.dequeueReusableCell(withIdentifier: CommentsMoreCell.reuseIdentifier, for: indexPath) as! CommentsMoreCell
+            cell.configure(isLoading: loadingReplies.contains(row.parentId))
+            cell.onTap = { [weak self] in
+                self?.loadReplies(for: row.parentId)
+            }
+            cell.applyTheme()
+            return cell
+
+        case .comment, .reply:
+            let cell = tableView.dequeueReusableCell(withIdentifier: CommentCell.reuseIdentifier, for: indexPath) as! CommentCell
+            guard let comment = row.comment else { return cell }
+            let isTopLevel = row.kind == .comment
+            let repliesVisible = expandedReplies.contains(comment.id)
+            cell.configure(
                 comment: comment,
-                depth: depth,
-                isExpanded: expanded.contains(comment.id),
-                repliesExpanded: state?.isExpanded ?? false,
-                repliesLoading: state?.isLoading ?? false,
-                width: tableView.bounds.width
+                depth: row.depth,
+                isReply: !isTopLevel,
+                textExpanded: expandedText.contains(comment.id),
+                repliesVisible: repliesVisible,
+                hasMoreReplies: replyContinuations[comment.id] != nil,
+                isLoadingReplies: loadingReplies.contains(comment.id)
             )
-            commentCell.configure(model: model)
-            commentCell.onReadMore = { [weak self] in self?.toggleExpanded(comment) }
-            commentCell.onToggleReplies = { [weak self] in self?.toggleReplies(for: comment) }
-            commentCell.onAuthor = { [weak self] in
+            cell.onToggleText = { [weak self] in
+                self?.toggleText(for: comment.id)
+            }
+            cell.onToggleReplies = { [weak self] in
+                self?.toggleReplies(for: comment)
+            }
+            cell.onOpenChannel = { [weak self] in
                 guard !comment.authorChannelId.isEmpty else { return }
                 self?.onOpenChannel?(comment.authorChannelId)
             }
-            commentCell.onTimestamp = { [weak self] seconds in
-                self?.onSeek?(seconds)
-            }
-            return commentCell
-
-        case .moreReplies(let commentId):
-            let cell = tableView.dequeueReusableCell(withIdentifier: CommentMoreCell.reuseIdentifier, for: indexPath)
-            if let moreCell = cell as? CommentMoreCell {
-                moreCell.configure(title: "Load more replies", isLoading: replies[commentId]?.isLoading ?? false)
-            }
+            cell.applyTheme()
             return cell
-
-        case .loadMorePage:
-            let cell = tableView.dequeueReusableCell(withIdentifier: CommentMoreCell.reuseIdentifier, for: indexPath)
-            if let moreCell = cell as? CommentMoreCell {
-                moreCell.configure(title: "Load more comments", isLoading: isLoadingMore)
-            }
-            return cell
-        }
-    }
-}
-
-// MARK: - Delegate
-
-extension CommentsViewController: UITableViewDelegate {
-
-    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        tableView.deselectRow(at: indexPath, animated: true)
-        guard let row = rows.element(at: indexPath.row) else { return }
-        switch row {
-        case .moreReplies(let commentId):
-            var state = replies[commentId] ?? Replies()
-            guard let token = state.continuation else { return }
-            state.isLoading = true
-            replies[commentId] = state
-            rebuildRows()
-            tableView.reloadData()
-            api.commentReplies(continuation: token) { [weak self] result in
-                guard let self = self else { return }
-                DispatchQueue.main.async {
-                    var current = self.replies[commentId] ?? Replies()
-                    current.isLoading = false
-                    if case .success(let page) = result {
-                        var known = Set(current.items.map { $0.id })
-                        for reply in page.comments where !known.contains(reply.id) {
-                            current.items.append(reply)
-                            known.insert(reply.id)
-                        }
-                        current.continuation = page.continuation
-                    }
-                    self.replies[commentId] = current
-                    self.rebuildRows()
-                    self.tableView.reloadData()
-                }
-            }
-        case .loadMorePage:
-            loadMore()
-        case .comment:
-            break
         }
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard scrollView === tableView else { return }
-        let height = scrollView.contentSize.height
-        let visible = scrollView.bounds.height
-        guard height > visible else { return }
-        if scrollView.contentOffset.y > height - visible * 2.0 {
+        let remaining = scrollView.contentSize.height - scrollView.contentOffset.y - scrollView.bounds.height
+        if remaining < 320.0 {
             loadMore()
         }
     }
 }
 
-// MARK: - Prefetching
-
-extension CommentsViewController: UITableViewDataSourcePrefetching {
-
-    func tableView(_ tableView: UITableView, prefetchRowsAt indexPaths: [IndexPath]) {
-        var urls: [String] = []
-        for indexPath in indexPaths {
-            guard let row = rows.element(at: indexPath.row) else { continue }
-            if case .comment(let comment, _) = row {
-                urls.append(comment.authorThumbnail)
-            }
-        }
-        ImageLoader.shared.prefetch(urls)
-    }
-}
-
-// MARK: - Timestamps
-
-/// Finds the `1:23` / `1:02:03` timestamps inside a comment and turns them into a position.
-enum CommentTimestamps {
-
-    private static let regex = try? NSRegularExpression(pattern: "(?<![0-9:])([0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?)(?![0-9:])")
-
-    /// Every timestamp in `text`, with the range it occupies.
-    static func links(in text: String) -> [(range: NSRange, seconds: TimeInterval)] {
-        guard let regex = regex else { return [] }
-        let full = text as NSString
-        let matches = regex.matches(in: text, options: [], range: NSRange(location: 0, length: full.length))
-        var result: [(range: NSRange, seconds: TimeInterval)] = []
-        for match in matches {
-            guard match.numberOfRanges > 1 else { continue }
-            let range = match.range(at: 1)
-            let stamp = full.substring(with: range)
-            result.append((range, seconds(stamp)))
-        }
-        return result
-    }
-
-    /// "1:02:03" -> 3723.
-    static func seconds(_ stamp: String) -> TimeInterval {
-        let parts = stamp.split(separator: ":").compactMap { Double($0) }
-        guard !parts.isEmpty else { return 0.0 }
-        var total: Double = 0.0
-        for part in parts {
-            total = total * 60.0 + part
-        }
-        return total
-    }
-
-    /// How long ago a comment was posted, from YouTube's own wording ("3 weeks ago").
-    ///
-    /// The wording is already localised, so this reads the number and the unit rather than parsing a
-    /// date. A comment whose wording is not a relative one sorts to the end.
-    static func age(_ text: String) -> TimeInterval {
-        let lower = text.lowercased()
-        let number = Double(lower.components(separatedBy: CharacterSet.decimalDigits.inverted).joined())
-            ?? Double(lower.split(separator: " ").first(where: { Int($0) != nil }) ?? "")
-            ?? 0.0
-        if lower.contains("second") { return number }
-        if lower.contains("minute") { return number * 60.0 }
-        if lower.contains("hour") { return number * 3600.0 }
-        if lower.contains("day") { return number * 86_400.0 }
-        if lower.contains("week") { return number * 604_800.0 }
-        if lower.contains("month") { return number * 2_592_000.0 }
-        if lower.contains("year") { return number * 31_536_000.0 }
-        return TimeInterval.greatestFiniteMagnitude
-    }
-}
-
 // MARK: - Comment cell
 
-/// One comment, or one reply indented under its parent.
+/// One comment or reply.
+///
+/// The layout follows the Android item: the avatar on the left, a pinned banner above the author,
+/// the author and the relative time, the body (four lines until tapped), the like count and the
+/// reply control. Replies are indented by `depth`.
 final class CommentCell: UITableViewCell {
 
     static let reuseIdentifier = "CommentCell"
 
-    struct Model {
-        let comment: Comment
-        let depth: Int
-        let isExpanded: Bool
-        let repliesExpanded: Bool
-        let repliesLoading: Bool
-        let width: CGFloat
-    }
-
-    /// Called when the viewer asks for the rest of a long comment.
-    var onReadMore: (() -> Void)?
-    /// Called when the viewer opens or closes the replies.
+    /// Called when the body is tapped, so the owner can expand or collapse it.
+    var onToggleText: (() -> Void)?
+    /// Called when the reply control is tapped.
     var onToggleReplies: (() -> Void)?
-    /// Called when the viewer taps the author.
-    var onAuthor: (() -> Void)?
-    /// Called when the viewer taps a timestamp in the comment.
-    var onTimestamp: ((TimeInterval) -> Void)?
+    /// Called when the avatar or author is tapped.
+    var onOpenChannel: (() -> Void)?
 
-    private let threadLine = UIView()
     private let avatarView = AsyncImageView()
-    private let authorLabel = UILabel()
-    private let timeLabel = UILabel()
+    private let pinnedRow = UIStackView()
+    private let pinnedIcon = FlowIconView()
     private let pinnedLabel = UILabel()
-    private let textLabel = TimestampLabel()
-    private let readMoreButton = UIButton(type: .custom)
+    private let authorLabel = UILabel()
+    private let verifiedIcon = FlowIconView()
+    private let timeLabel = UILabel()
+    private let textLabel = UILabel()
     private let likeIcon = FlowIconView()
     private let likeLabel = UILabel()
-    private let repliesButton = UIButton(type: .custom)
+    private let heartedIcon = FlowIconView()
+    private let repliesButton = UIButton(type: .system)
+    private let stack = UIStackView()
+    private let authorRow = UIStackView()
+    private let actionRow = UIStackView()
 
-    private var leadingConstraint: NSLayoutConstraint?
-    private var isOverflowing = false
+    private var avatarLeading: NSLayoutConstraint!
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -718,168 +553,171 @@ final class CommentCell: UITableViewCell {
         backgroundColor = .clear
         contentView.backgroundColor = .clear
 
-        threadLine.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(threadLine)
-
-        avatarView.translatesAutoresizingMaskIntoConstraints = false
         avatarView.contentMode = .scaleAspectFill
         avatarView.clipsToBounds = true
         avatarView.applyCornerRadius(18.0)
-        contentView.addSubview(avatarView)
+        avatarView.isUserInteractionEnabled = true
+        avatarView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleAuthorTap)))
+        contentView.addSubviewForAutoLayout(avatarView)
 
-        authorLabel.translatesAutoresizingMaskIntoConstraints = false
-        authorLabel.font = FlowTypography.labelMediumEmphasized
-        authorLabel.isUserInteractionEnabled = true
-        authorLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleAuthor)))
-        contentView.addSubview(authorLabel)
+        pinnedIcon.icon = .chapter
+        pinnedIcon.iconSize = 12.0
+        pinnedIcon.translatesAutoresizingMaskIntoConstraints = false
+        pinnedIcon.widthAnchor.constraint(equalToConstant: 12.0).isActive = true
+        pinnedIcon.heightAnchor.constraint(equalToConstant: 12.0).isActive = true
 
-        timeLabel.translatesAutoresizingMaskIntoConstraints = false
-        timeLabel.font = FlowTypography.bodySmall
-        contentView.addSubview(timeLabel)
-
-        pinnedLabel.translatesAutoresizingMaskIntoConstraints = false
         pinnedLabel.font = FlowTypography.labelSmall
-        pinnedLabel.text = "Pinned by creator"
-        contentView.addSubview(pinnedLabel)
+        pinnedLabel.numberOfLines = 1
 
-        textLabel.translatesAutoresizingMaskIntoConstraints = false
+        pinnedRow.axis = .horizontal
+        pinnedRow.spacing = FlowSpacing.sm
+        pinnedRow.alignment = .center
+        pinnedRow.addArrangedSubview(pinnedIcon)
+        pinnedRow.addArrangedSubview(pinnedLabel)
+
+        authorLabel.font = FlowTypography.titleSmallEmphasized
+        authorLabel.numberOfLines = 1
+        authorLabel.lineBreakMode = .byTruncatingTail
+        authorLabel.isUserInteractionEnabled = true
+        authorLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleAuthorTap)))
+
+        verifiedIcon.icon = .verified
+        verifiedIcon.iconSize = 14.0
+        verifiedIcon.translatesAutoresizingMaskIntoConstraints = false
+        verifiedIcon.widthAnchor.constraint(equalToConstant: 14.0).isActive = true
+        verifiedIcon.heightAnchor.constraint(equalToConstant: 14.0).isActive = true
+
+        timeLabel.font = FlowTypography.bodySmall
+        timeLabel.numberOfLines = 1
+        timeLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        let authorSpacer = UIView()
+        authorSpacer.translatesAutoresizingMaskIntoConstraints = false
+        authorSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        authorRow.axis = .horizontal
+        authorRow.spacing = FlowSpacing.sm
+        authorRow.alignment = .center
+        authorRow.addArrangedSubview(authorLabel)
+        authorRow.addArrangedSubview(verifiedIcon)
+        authorRow.addArrangedSubview(timeLabel)
+        authorRow.addArrangedSubview(authorSpacer)
+
         textLabel.font = FlowTypography.bodyMedium
         textLabel.numberOfLines = 4
-        textLabel.onTimestamp = { [weak self] seconds in
-            self?.onTimestamp?(seconds)
-        }
-        contentView.addSubview(textLabel)
+        textLabel.lineBreakMode = .byTruncatingTail
+        textLabel.isUserInteractionEnabled = true
+        textLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTextTap)))
 
-        readMoreButton.translatesAutoresizingMaskIntoConstraints = false
-        readMoreButton.titleLabel?.font = FlowTypography.labelSmallEmphasized
-        readMoreButton.contentHorizontalAlignment = .left
-        readMoreButton.addTarget(self, action: #selector(handleReadMore), for: .touchUpInside)
-        contentView.addSubview(readMoreButton)
-
-        likeIcon.translatesAutoresizingMaskIntoConstraints = false
-        likeIcon.icon = .heart
+        likeIcon.icon = .liked
         likeIcon.iconSize = 14.0
-        contentView.addSubview(likeIcon)
+        likeIcon.translatesAutoresizingMaskIntoConstraints = false
+        likeIcon.widthAnchor.constraint(equalToConstant: 14.0).isActive = true
+        likeIcon.heightAnchor.constraint(equalToConstant: 14.0).isActive = true
 
-        likeLabel.translatesAutoresizingMaskIntoConstraints = false
-        likeLabel.font = FlowTypography.labelSmall
-        contentView.addSubview(likeLabel)
+        likeLabel.font = FlowTypography.labelMedium
+        likeLabel.numberOfLines = 1
 
-        repliesButton.translatesAutoresizingMaskIntoConstraints = false
-        repliesButton.titleLabel?.font = FlowTypography.labelMediumEmphasized
+        heartedIcon.icon = .heart
+        heartedIcon.iconSize = 14.0
+        heartedIcon.translatesAutoresizingMaskIntoConstraints = false
+        heartedIcon.widthAnchor.constraint(equalToConstant: 14.0).isActive = true
+        heartedIcon.heightAnchor.constraint(equalToConstant: 14.0).isActive = true
+
+        let actionSpacer = UIView()
+        actionSpacer.translatesAutoresizingMaskIntoConstraints = false
+        actionSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        repliesButton.titleLabel?.font = FlowTypography.labelLargeEmphasized
         repliesButton.contentHorizontalAlignment = .left
-        repliesButton.addTarget(self, action: #selector(handleReplies), for: .touchUpInside)
-        contentView.addSubview(repliesButton)
+        repliesButton.addTarget(self, action: #selector(handleRepliesTap), for: .touchUpInside)
 
-        let leading = avatarView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: FlowSpacing.screenMargin)
-        leadingConstraint = leading
+        actionRow.axis = .horizontal
+        actionRow.spacing = FlowSpacing.sm
+        actionRow.alignment = .center
+        actionRow.addArrangedSubview(likeIcon)
+        actionRow.addArrangedSubview(likeLabel)
+        actionRow.addArrangedSubview(heartedIcon)
+        actionRow.addArrangedSubview(actionSpacer)
+        actionRow.addArrangedSubview(repliesButton)
 
+        stack.axis = .vertical
+        stack.spacing = FlowSpacing.xs
+        stack.alignment = .fill
+        stack.addArrangedSubview(pinnedRow)
+        stack.addArrangedSubview(authorRow)
+        stack.addArrangedSubview(textLabel)
+        stack.addArrangedSubview(actionRow)
+        contentView.addSubviewForAutoLayout(stack)
+
+        avatarLeading = avatarView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: FlowSpacing.xl)
         NSLayoutConstraint.activate([
-            leading,
+            avatarLeading,
             avatarView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: FlowSpacing.lg),
             avatarView.widthAnchor.constraint(equalToConstant: 36.0),
             avatarView.heightAnchor.constraint(equalToConstant: 36.0),
 
-            threadLine.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: FlowSpacing.screenMargin + 17.0),
-            threadLine.widthAnchor.constraint(equalToConstant: 1.5),
-            threadLine.topAnchor.constraint(equalTo: contentView.topAnchor),
-            threadLine.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-
-            authorLabel.leadingAnchor.constraint(equalTo: avatarView.trailingAnchor, constant: FlowSpacing.lg),
-            authorLabel.topAnchor.constraint(equalTo: avatarView.topAnchor),
-
-            timeLabel.leadingAnchor.constraint(equalTo: authorLabel.trailingAnchor, constant: FlowSpacing.sm),
-            timeLabel.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -FlowSpacing.screenMargin),
-            timeLabel.firstBaselineAnchor.constraint(equalTo: authorLabel.firstBaselineAnchor),
-
-            pinnedLabel.leadingAnchor.constraint(equalTo: authorLabel.leadingAnchor),
-            pinnedLabel.topAnchor.constraint(equalTo: authorLabel.bottomAnchor, constant: FlowSpacing.xxs),
-
-            textLabel.leadingAnchor.constraint(equalTo: authorLabel.leadingAnchor),
-            textLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -FlowSpacing.screenMargin),
-            textLabel.topAnchor.constraint(equalTo: pinnedLabel.bottomAnchor, constant: FlowSpacing.xs),
-
-            readMoreButton.leadingAnchor.constraint(equalTo: textLabel.leadingAnchor),
-            readMoreButton.topAnchor.constraint(equalTo: textLabel.bottomAnchor, constant: FlowSpacing.xxs),
-            readMoreButton.heightAnchor.constraint(equalToConstant: 20.0),
-
-            likeIcon.leadingAnchor.constraint(equalTo: textLabel.leadingAnchor),
-            likeIcon.topAnchor.constraint(equalTo: readMoreButton.bottomAnchor, constant: FlowSpacing.xs),
-            likeIcon.widthAnchor.constraint(equalToConstant: 14.0),
-            likeIcon.heightAnchor.constraint(equalToConstant: 14.0),
-
-            likeLabel.leadingAnchor.constraint(equalTo: likeIcon.trailingAnchor, constant: FlowSpacing.xs),
-            likeLabel.centerYAnchor.constraint(equalTo: likeIcon.centerYAnchor),
-
-            repliesButton.leadingAnchor.constraint(equalTo: likeLabel.trailingAnchor, constant: FlowSpacing.xl),
-            repliesButton.centerYAnchor.constraint(equalTo: likeIcon.centerYAnchor),
-            repliesButton.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -FlowSpacing.screenMargin),
-            repliesButton.heightAnchor.constraint(equalToConstant: 24.0),
-
-            likeIcon.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -FlowSpacing.lg),
+            stack.leadingAnchor.constraint(equalTo: avatarView.trailingAnchor, constant: FlowSpacing.lg),
+            stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -FlowSpacing.xl),
+            stack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: FlowSpacing.lg),
+            stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -FlowSpacing.lg),
         ])
         applyTheme()
     }
 
-    /// Fills the cell.
-    func configure(model: Model) {
-        let comment = model.comment
-        let indent = CGFloat(model.depth) * 34.0
-        leadingConstraint?.constant = FlowSpacing.screenMargin + indent
-        threadLine.isHidden = model.depth == 0
-
+    /// Fills the cell from a comment.
+    func configure(
+        comment: Comment,
+        depth: Int,
+        isReply: Bool,
+        textExpanded: Bool,
+        repliesVisible: Bool,
+        hasMoreReplies: Bool,
+        isLoadingReplies: Bool
+    ) {
+        avatarLeading.constant = FlowSpacing.xl + CGFloat(depth) * 28.0
         avatarView.setImage(url: comment.authorThumbnail)
-        authorLabel.text = comment.author
+        avatarView.isHidden = isReply && comment.authorThumbnail.isEmpty
+
+        pinnedRow.isHidden = !comment.isPinned
+        pinnedLabel.text = "Pinned by creator"
+
+        authorLabel.text = CommentsViewController.displayAuthor(comment.author)
+        verifiedIcon.isHidden = !comment.isVerified
         timeLabel.text = comment.publishedTime
-        pinnedLabel.isHidden = !comment.isPinned
 
-        let built = CommentTimestamps.build(
-            text: comment.text,
-            color: FlowTheme.shared.scheme.onSurface,
-            accent: FlowTheme.shared.scheme.primary,
-            font: FlowTypography.bodyMedium
-        )
-        textLabel.attributedText = built.text
-        textLabel.links = built.links
-        textLabel.numberOfLines = model.isExpanded ? 0 : 4
+        textLabel.text = comment.text
+        textLabel.numberOfLines = textExpanded ? 0 : 4
+        textLabel.lineBreakMode = textExpanded ? .byWordWrapping : .byTruncatingTail
 
-        let available = max(80.0, model.width - FlowSpacing.screenMargin * 2.0 - 36.0 - FlowSpacing.lg - indent)
-        isOverflowing = model.isExpanded ? false : CommentCell.overflows(built.text, width: available, lines: 4)
-        readMoreButton.isHidden = !isOverflowing && !model.isExpanded
-        readMoreButton.setTitle(model.isExpanded ? "Show less" : "Read more", for: .normal)
-
-        likeLabel.text = comment.likeCount > 0 ? Formatters.compactCount(comment.likeCount) : ""
         likeIcon.isHidden = comment.likeCount <= 0
         likeLabel.isHidden = comment.likeCount <= 0
+        likeLabel.text = comment.likeCountText.isEmpty
+            ? Formatters.compactCount(comment.likeCount)
+            : comment.likeCountText
+        heartedIcon.isHidden = !comment.isHearted
 
-        if comment.replyCount > 0 {
-            repliesButton.isHidden = false
-            if model.repliesLoading {
-                repliesButton.setTitle("Loading replies…", for: .normal)
-                repliesButton.isEnabled = false
-            } else if model.repliesExpanded {
-                repliesButton.setTitle("Hide replies", for: .normal)
-                repliesButton.isEnabled = true
-            } else {
-                repliesButton.setTitle("View " + String(comment.replyCount) + (comment.replyCount == 1 ? " reply" : " replies"), for: .normal)
-                repliesButton.isEnabled = true
-            }
+        let replyCount = max(comment.replyCount, comment.replies.count)
+        let showReplies = !isReply && (replyCount > 0 || comment.continuation != nil)
+        repliesButton.isHidden = !showReplies
+        if isLoadingReplies {
+            repliesButton.setTitle("Loading replies…", for: .normal)
+            repliesButton.isEnabled = false
         } else {
-            repliesButton.isHidden = true
+            repliesButton.isEnabled = true
+            if repliesVisible {
+                repliesButton.setTitle(hasMoreReplies ? "Load more replies" : "Hide replies", for: .normal)
+            } else if replyCount == 1 {
+                repliesButton.setTitle("View 1 reply", for: .normal)
+            } else if replyCount > 1 {
+                repliesButton.setTitle("View \(replyCount) replies", for: .normal)
+            } else {
+                repliesButton.setTitle("View replies", for: .normal)
+            }
         }
 
-        accessibilityLabel = comment.author + ": " + comment.text
+        accessibilityLabel = [comment.author, comment.text].filter { !$0.isEmpty }.joined(separator: ", ")
         applyTheme()
-    }
-
-    private static func overflows(_ text: NSAttributedString, width: CGFloat, lines: Int) -> Bool {
-        let scratch = UILabel()
-        scratch.attributedText = text
-        scratch.numberOfLines = 0
-        let full = scratch.sizeThatFits(CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)).height
-        scratch.numberOfLines = lines
-        let clamped = scratch.sizeThatFits(CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)).height
-        return full > clamped + 0.5
     }
 
     /// Repaints the cell in the current palette.
@@ -887,36 +725,40 @@ final class CommentCell: UITableViewCell {
         let scheme = FlowTheme.shared.scheme
         authorLabel.textColor = scheme.onSurface
         timeLabel.textColor = scheme.onSurfaceVariant
+        textLabel.textColor = scheme.onSurface
         pinnedLabel.textColor = scheme.onSurfaceVariant
-        likeLabel.textColor = scheme.onSurfaceVariant
+        pinnedIcon.iconColor = scheme.onSurfaceVariant
+        verifiedIcon.iconColor = scheme.onSurfaceVariant
         likeIcon.iconColor = scheme.onSurfaceVariant
-        threadLine.backgroundColor = scheme.outlineVariant
-        readMoreButton.setTitleColor(scheme.onSurfaceVariant, for: .normal)
+        likeLabel.textColor = scheme.onSurfaceVariant
+        heartedIcon.iconColor = FlowTheme.youtubeRed
         repliesButton.setTitleColor(scheme.primary, for: .normal)
-        textLabel.applyTheme()
+        avatarView.placeholderColor = scheme.surfaceVariant
     }
 
-    @objc private func handleReadMore() {
-        onReadMore?()
+    @objc private func handleTextTap() {
+        onToggleText?()
     }
 
-    @objc private func handleReplies() {
+    @objc private func handleRepliesTap() {
         onToggleReplies?()
     }
 
-    @objc private func handleAuthor() {
-        onAuthor?()
+    @objc private func handleAuthorTap() {
+        onOpenChannel?()
     }
 }
 
-// MARK: - More cell
+// MARK: - More replies cell
 
-/// The "load more" row, used for both the next page and a thread's next page of replies.
-final class CommentMoreCell: UITableViewCell {
+/// The row under a loaded reply thread that asks for the next page of replies.
+final class CommentsMoreCell: UITableViewCell {
 
-    static let reuseIdentifier = "CommentMoreCell"
+    static let reuseIdentifier = "CommentsMoreCell"
 
-    private let titleLabel = UILabel()
+    var onTap: (() -> Void)?
+
+    private let button = FlowButton.make("Load more replies", style: .text)
     private let spinner = UIActivityIndicatorView(style: .gray)
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
@@ -934,140 +776,47 @@ final class CommentMoreCell: UITableViewCell {
         backgroundColor = .clear
         contentView.backgroundColor = .clear
 
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = FlowTypography.labelLargeEmphasized
-        contentView.addSubview(titleLabel)
+        button.onTap = { [weak self] in self?.onTap?() }
+        contentView.addSubviewForAutoLayout(button)
 
         spinner.translatesAutoresizingMaskIntoConstraints = false
         spinner.hidesWhenStopped = true
         contentView.addSubview(spinner)
 
         NSLayoutConstraint.activate([
-            titleLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: FlowSpacing.screenMargin),
-            titleLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: FlowSpacing.md),
-            titleLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -FlowSpacing.md),
+            button.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 60.0),
+            button.topAnchor.constraint(equalTo: contentView.topAnchor, constant: FlowSpacing.xs),
+            button.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -FlowSpacing.md),
+            button.heightAnchor.constraint(equalToConstant: 36.0),
 
-            spinner.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: FlowSpacing.md),
-            spinner.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
+            spinner.leadingAnchor.constraint(equalTo: button.trailingAnchor, constant: FlowSpacing.md),
+            spinner.centerYAnchor.constraint(equalTo: button.centerYAnchor),
         ])
-        applyTheme()
     }
 
-    /// Sets the row's wording and whether it is waiting on the network.
-    func configure(title: String, isLoading: Bool) {
-        titleLabel.text = title
+    /// Shows the spinner in place of the label while a page is loading.
+    func configure(isLoading: Bool) {
+        button.isHidden = isLoading
         if isLoading {
             spinner.startAnimating()
         } else {
             spinner.stopAnimating()
         }
-        applyTheme()
     }
 
-    private func applyTheme() {
-        titleLabel.textColor = FlowTheme.shared.scheme.primary
-    }
-}
-
-// MARK: - Timestamp label
-
-/// A comment's text, with its timestamps tinted and tappable.
-///
-/// The label is a plain `UILabel` rather than a text view so the cell can self-size, and the tap is
-/// resolved through a throwaway `NSLayoutManager` laid out at the label's own width, which is what
-/// turns a touch point into a character index without asking the label for private geometry.
-final class TimestampLabel: UILabel {
-
-    /// The timestamps inside the text, as ranges into the attributed string.
-    var links: [(range: NSRange, seconds: TimeInterval)] = []
-
-    /// Called when the viewer taps a timestamp.
-    var onTimestamp: ((TimeInterval) -> Void)?
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        commonInit()
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        commonInit()
-    }
-
-    private func commonInit() {
-        isUserInteractionEnabled = true
-        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTap(_:))))
-    }
-
-    /// Repaints the text in the current palette, keeping the timestamp tint.
+    /// Repaints the row in the current palette.
     func applyTheme() {
-        guard let attributed = attributedText else { return }
-        let mutable = NSMutableAttributedString(attributedString: attributed)
-        let scheme = FlowTheme.shared.scheme
-        let full = NSRange(location: 0, length: mutable.length)
-        mutable.addAttribute(.foregroundColor, value: scheme.onSurface, range: full)
-        for link in links where link.range.location + link.range.length <= mutable.length {
-            mutable.addAttribute(.foregroundColor, value: scheme.primary, range: link.range)
-        }
-        attributedText = mutable
-    }
-
-    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
-        guard let attributed = attributedText, !links.isEmpty else { return }
-        let point = gesture.location(in: self)
-
-        let storage = NSTextStorage(attributedString: attributed)
-        let layoutManager = NSLayoutManager()
-        let container = NSTextContainer(size: CGSize(width: bounds.width, height: CGFloat.greatestFiniteMagnitude))
-        container.lineFragmentPadding = 0.0
-        container.maximumNumberOfLines = numberOfLines
-        container.lineBreakMode = lineBreakMode
-        layoutManager.addTextContainer(container)
-        storage.addLayoutManager(layoutManager)
-        layoutManager.ensureLayout(for: container)
-
-        let used = layoutManager.usedRect(for: container)
-        let offsetY = max(0.0, (bounds.height - used.height) / 2.0)
-        let adjusted = CGPoint(x: point.x, y: point.y - offsetY)
-        guard adjusted.y >= 0.0, adjusted.y <= used.height else { return }
-        let index = layoutManager.characterIndex(
-            for: adjusted,
-            in: container,
-            fractionOfDistanceBetweenInsertionPoints: nil
-        )
-        for link in links where NSLocationInRange(index, link.range) {
-            onTimestamp?(link.seconds)
-            return
-        }
+        button.applyTheme()
     }
 }
 
-// MARK: - Comment text
+// MARK: - Helpers
 
-extension CommentTimestamps {
+extension CommentsViewController {
 
-    /// Builds the comment's attributed text and the links inside it.
-    static func build(
-        text: String,
-        color: UIColor,
-        accent: UIColor,
-        font: UIFont
-    ) -> (text: NSAttributedString, links: [(range: NSRange, seconds: TimeInterval)]) {
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = .left
-        paragraph.lineHeightMultiple = 1.15
-        let attributed = NSMutableAttributedString(
-            string: text,
-            attributes: [
-                .font: font,
-                .foregroundColor: color,
-                .paragraphStyle: paragraph,
-            ]
-        )
-        let links = links(in: text)
-        for link in links where link.range.location + link.range.length <= attributed.length {
-            attributed.addAttribute(.foregroundColor, value: accent, range: link.range)
-        }
-        return (attributed, links)
+    /// YouTube hands back bare names; the app shows them the way the site does.
+    static func displayAuthor(_ author: String) -> String {
+        let trimmed = author.trimmed
+        return trimmed.hasPrefix("@") ? trimmed : "@" + trimmed
     }
 }

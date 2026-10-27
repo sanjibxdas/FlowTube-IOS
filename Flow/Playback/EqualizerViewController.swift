@@ -37,8 +37,12 @@ final class EqualizerViewController: PlaybackSheetController {
 
     /// Guards against the engine's change notification rebuilding the controls that caused it.
     private var isApplying = false
-    /// The engine's previous change handler, restored when the sheet goes away.
-    private var previousOnChange: (() -> Void)?
+
+    /// The engine has one change slot. The sheet takes it over while it is alive and gives it back
+    /// when the last instance goes away, so a handler installed before the sheet opened survives.
+    /// Both are touched only on the main queue, which is where the engine notifies.
+    private static var liveCount = 0
+    private static var baseHandler: (() -> Void)?
 
     override var sheetHeightFraction: CGFloat {
         return 0.94
@@ -58,7 +62,7 @@ final class EqualizerViewController: PlaybackSheetController {
 
     deinit {
         bag.cancelAll()
-        engine.onChange = previousOnChange
+        releaseEngineHandler()
     }
 
     // MARK: - Lifecycle
@@ -222,17 +226,32 @@ final class EqualizerViewController: PlaybackSheetController {
     // MARK: - Observation
 
     private func observe() {
-        // The engine has a single change handler. Take it over and chain to whatever was there, so
-        // the sheet can be opened more than once without losing an earlier listener.
-        previousOnChange = engine.onChange
-        let previous = previousOnChange
-        engine.onChange = { [weak self] in
-            previous?()
-            self?.reload()
-        }
+        claimEngineHandler()
         bag.add(FlowEventBus.shared.on("theme") { [weak self] _ in
             self?.applyTheme()
         })
+    }
+
+    /// Takes the engine's change slot, remembering whatever was there so it can be restored.
+    private func claimEngineHandler() {
+        guard EqualizerViewController.liveCount == 0 else {
+            EqualizerViewController.liveCount += 1
+            return
+        }
+        EqualizerViewController.baseHandler = engine.onChange
+        EqualizerViewController.liveCount = 1
+        engine.onChange = { [weak self] in
+            EqualizerViewController.baseHandler?()
+            self?.reload()
+        }
+    }
+
+    /// Gives the slot back once no sheet is using it.
+    private func releaseEngineHandler() {
+        EqualizerViewController.liveCount = max(EqualizerViewController.liveCount - 1, 0)
+        guard EqualizerViewController.liveCount == 0 else { return }
+        engine.onChange = EqualizerViewController.baseHandler
+        EqualizerViewController.baseHandler = nil
     }
 
     /// Reads the engine back into the controls.
