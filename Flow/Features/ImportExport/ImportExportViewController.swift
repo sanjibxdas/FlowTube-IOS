@@ -1074,7 +1074,9 @@ struct FlowBackupArchive {
         return counts
     }
 
-    private static func applySettings(_ records: [(key: PrefsStore.Key, kind: String, string: String?, number: Double?)]) -> FlowBackupCounts {
+    private static func applySettings(
+        _ records: [(key: PrefsStore.Key, kind: String, string: String?, number: Double?, list: [String]?)]
+    ) -> FlowBackupCounts {
         var counts = FlowBackupCounts()
         let prefs = FlowApp.shared.prefs
         for record in records {
@@ -1099,6 +1101,14 @@ struct FlowBackupArchive {
             case "double":
                 guard let value = record.number else { continue }
                 if abs(prefs.double(for: record.key, fallback: value + 1.0) - value) < 0.0001 {
+                    counts.skipped += 1
+                } else {
+                    prefs.set(value, for: record.key)
+                    counts.settings += 1
+                }
+            case "list":
+                guard let value = record.list else { continue }
+                if prefs.stringArray(for: record.key) == value {
                     counts.skipped += 1
                 } else {
                     prefs.set(value, for: record.key)

@@ -128,6 +128,26 @@ struct FlowSyncCode {
         return String(format: "%06d", Int32(value % 1_000_000))
     }
 
+    /// The proof the joining device sends with its first request. It is a digest of the key, so the
+    /// host can tell that the other device holds the same code without the key ever being sent.
+    var helloProof: String {
+        return FlowSyncCode.digestHex(sessionId: sessionId, key: key, label: "flow-sync-hello")
+    }
+
+    /// The host's answer to `helloProof`: a different digest of the same key, which proves the host
+    /// holds it too. Neither digest reveals the key or the six-digit code.
+    var helloAck: String {
+        return FlowSyncCode.digestHex(sessionId: sessionId, key: key, label: "flow-sync-ack")
+    }
+
+    private static func digestHex(sessionId: Data, key: Data, label: String) -> String {
+        var material = [UInt8]()
+        material.append(contentsOf: key)
+        material.append(contentsOf: sessionId)
+        material.append(contentsOf: Array(label.utf8))
+        return InnerTubeClient.sha1(material).map { String(format: "%02x", $0) }.joined()
+    }
+
     /// The JSON text the QR encodes.
     func encoded() -> String {
         let payload: [String: Any] = [
@@ -797,7 +817,7 @@ enum FlowSyncPayloadCodec {
             .themeMode, .themeVariant, .fontFamily,
             .playbackQuality, .playbackSpeed, .autoplayNext, .resumePlayback, .backgroundPlayback,
             .downloadQuality, .downloadWifiOnly, .downloadAudioOnly,
-            .sponsorBlockEnabled, .sponsorBlockAutoSkip,
+            .sponsorBlockEnabled, .sponsorBlockAutoSkip, .sponsorBlockCategories,
             .subtitlesEnabled, .subtitleLanguage,
             .gridItemSize, .showShortsShelf,
         ]
@@ -809,6 +829,9 @@ enum FlowSyncPayloadCodec {
         for key in settingsKeys() {
             if let text = prefs.string(for: key) {
                 values[key.rawValue] = ["type": "string", "value": text]
+            } else if let list = UserDefaults.standard.stringArray(forKey: key.rawValue) {
+                // SponsorBlock categories are stored as a string array, not a scalar.
+                values[key.rawValue] = ["type": "list", "value": list]
             } else if let number = UserDefaults.standard.object(forKey: key.rawValue) as? NSNumber {
                 // A number stored by `set(_:for:)` reads back as a number; booleans are tagged so
                 // the receiving device writes them back as booleans rather than 0/1 strings.
@@ -982,6 +1005,14 @@ enum FlowSyncPayloadCodec {
                     stats.skipped += 1
                 } else {
                     prefs.set(value, for: key)
+                    stats.updated += 1
+                }
+            case "list":
+                guard let list = entry["value"] as? [String] else { continue }
+                if prefs.stringArray(for: key) == list {
+                    stats.skipped += 1
+                } else {
+                    prefs.set(list, for: key)
                     stats.updated += 1
                 }
             default:
@@ -1209,7 +1240,10 @@ final class FlowSyncSession {
     }
 
     private func sendHello(_ code: FlowSyncCode) {
-        guard let url = endpoint(code, path: "/hello", query: ["sid": FlowSyncBase64.encode(code.sessionId)]) else {
+        guard let url = endpoint(code, path: "/hello", query: [
+            "sid": FlowSyncBase64.encode(code.sessionId),
+            "proof": code.helloProof,
+        ]) else {
             state = .failed("The connection data is missing a valid network address.")
             return
         }
@@ -1229,14 +1263,14 @@ final class FlowSyncSession {
                     self.state = .failed("Couldn't reach the other device. Check that both devices are on the same Wi-Fi and that a VPN or firewall isn't blocking the connection.")
                     return
                 }
-                self.clientPeerName = (root["name"] as? String) ?? "Device"
-                let expected = code.verificationCode
-                let received = (root["sas"] as? String) ?? ""
-                guard received == expected else {
-                    self.state = .failed("The two devices couldn't agree on the verification code. Ask the other device for a fresh code.")
+                guard (root["ack"] as? String) == code.helloAck else {
+                    self.state = .failed("The other device couldn't prove it holds this code. Ask it for a fresh one.")
                     return
                 }
-                self.state = .awaitingVerification(code: expected, peerName: self.clientPeerName)
+                self.clientPeerName = (root["name"] as? String) ?? "Device"
+                // The code is derived from the key both devices already hold, so it is computed
+                // here rather than received: nothing that identifies the session crosses the wire.
+                self.state = .awaitingVerification(code: code.verificationCode, peerName: self.clientPeerName)
             }
         }
         clientTask?.resume()
@@ -1245,6 +1279,7 @@ final class FlowSyncSession {
     /// The joining device confirms the codes match and starts the transfer.
     func confirmJoin() {
         guard let code = clientCode else { return }
+        state = .waiting(peerName: clientPeerName)
         sendOffer(code)
     }
 
@@ -1416,10 +1451,16 @@ final class FlowSyncSession {
 
         switch (request.method, request.path) {
         case ("GET", "/flow-sync/hello"):
+            // The joining device proves it holds the key with a digest, and gets a different digest
+            // back. The verification code itself is deliberately absent: both devices derive it from
+            // the session id and the key, so it never travels over the network.
+            guard request.query["proof"] == code.helloProof else {
+                return FlowSyncHTTPResponse.message("Wrong key", status: 403)
+            }
             return FlowSyncHTTPResponse.json([
                 "name": FlowSyncSession.deviceName(),
-                "sas": code.verificationCode,
                 "role": hostRole.rawValue,
+                "ack": code.helloAck,
             ])
 
         case ("POST", "/flow-sync/offer"):

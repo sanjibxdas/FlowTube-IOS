@@ -176,11 +176,3 @@ final class ClosureAction: NSObject {
     }
 }
 
-extension UIButton {
-    /// Adds a closure-backed action for `controlEvents`. The action is retained by the button.
-    func addClosureAction(for controlEvents: UIControl.Event, _ closure: @escaping () -> Void) {
-        let action = ClosureAction(closure)
-        addTarget(action, action: #selector(ClosureAction.run), for: controlEvents)
-        objc_setAssociatedObject(self, Unmanaged.passUnretained(action).toOpaque(), action, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
-    }
-}
