@@ -62,7 +62,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build 2>&1 | tee build.log || { echo '--- build failed ---'; tail -n 400 build.log; exit 1; }
 
-      - name: Package .ipa
+      - name: Package and fakesign .ipa
         run: |
           APP="$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -n 1)"
           echo "Found app: $APP"
@@ -70,6 +70,41 @@ jobs:
           mkdir -p Payload
           cp -R "$APP" Payload/
           /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "Payload/$(basename "$APP")/Info.plist"
+
+          # An unsigned app has no code signature, so iOS sees no application-identifier
+          # entitlement and Filza/installd rejects the install. Ad-hoc signing with the
+          # entitlements below produces exactly what AppSync Unified and Sideloadly expect:
+          # a fakesigned bundle that still gets re-signed with the user's own certificate
+          # by any sideloading tool.
+          cat > entitlements.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>application-identifier</key>
+            <string>FLOWTEAM01.org.flowtube.Flow</string>
+            <key>com.apple.developer.team-identifier</key>
+            <string>FLOWTEAM01</string>
+            <key>keychain-access-groups</key>
+            <array>
+              <string>FLOWTEAM01.org.flowtube.Flow</string>
+            </array>
+            <key>get-task-allow</key>
+            <true/>
+            <key>com.apple.security.application-groups</key>
+            <array>
+              <string>group.org.flowtube.Flow</string>
+            </array>
+          </dict>
+          </plist>
+          PLIST
+
+          codesign --force --deep --sign - --entitlements entitlements.plist "Payload/$(basename "$APP")"
+          echo '--- signature ---'
+          codesign -dv "Payload/$(basename "$APP")" 2>&1 | head -8
+          echo '--- embedded entitlements ---'
+          codesign -d --entitlements :- "Payload/$(basename "$APP")" 2>/dev/null | head -20
+
           zip -qry Flow.ipa Payload
           ls -lh Flow.ipa
 
