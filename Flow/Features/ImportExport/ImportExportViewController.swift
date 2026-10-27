@@ -480,13 +480,18 @@ private struct FlowBackupPlaylistItemRecord {
 }
 
 private struct FlowBackupPlaylistRecord {
+    /// The playlist's id. Android's export keeps its items in a separate `playlistVideos` list that
+    /// refers back by this id, so it has to survive a round trip even though this port rebuilds the
+    /// playlist under a fresh local id on import.
+    let id: String
     let title: String
     let description: String
     let thumbnailUrl: String
     let createdAt: Date
     let items: [FlowBackupPlaylistItemRecord]
 
-    init(title: String, description: String, thumbnailUrl: String, createdAt: Date, items: [FlowBackupPlaylistItemRecord]) {
+    init(id: String, title: String, description: String, thumbnailUrl: String, createdAt: Date, items: [FlowBackupPlaylistItemRecord]) {
+        self.id = id
         self.title = title
         self.description = description
         self.thumbnailUrl = thumbnailUrl
@@ -497,6 +502,7 @@ private struct FlowBackupPlaylistRecord {
     init?(dictionary: [String: Any]) {
         let name = (dictionary["name"] as? String) ?? ((dictionary["title"] as? String) ?? "")
         guard !name.isBlank else { return nil }
+        id = (dictionary["id"] as? String) ?? name
         title = name
         description = (dictionary["description"] as? String) ?? ""
         thumbnailUrl = (dictionary["thumbnailUrl"] as? String) ?? ""
@@ -506,6 +512,7 @@ private struct FlowBackupPlaylistRecord {
     }
 
     init(playlist: StoredPlaylist) {
+        id = playlist.playlistId
         title = playlist.title
         description = playlist.description
         thumbnailUrl = playlist.thumbnailUrl
@@ -515,6 +522,7 @@ private struct FlowBackupPlaylistRecord {
 
     var dictionary: [String: Any] {
         return [
+            "id": id,
             "name": title,
             "description": description,
             "thumbnailUrl": thumbnailUrl,
@@ -702,6 +710,7 @@ struct FlowBackupArchive {
             if record.items.isEmpty, let identifier = raw["id"] as? String,
                let referenced = itemsByPlaylist[identifier] {
                 record = FlowBackupPlaylistRecord(
+                    id: record.id,
                     title: record.title,
                     description: record.description,
                     thumbnailUrl: record.thumbnailUrl,
@@ -814,7 +823,7 @@ struct FlowBackupArchive {
             "playlistVideos": playlists.flatMap { playlist in
                 playlist.items.map { item in
                     [
-                        "playlistId": playlist.title,
+                        "playlistId": playlist.id,
                         "videoId": item.videoId,
                         "position": item.position,
                         "addedAt": Int(item.addedAt.timeIntervalSince1970 * 1000.0),

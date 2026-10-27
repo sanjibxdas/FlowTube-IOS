@@ -450,6 +450,8 @@ final class RecapBarChartView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        // The bars live in their own layer so a redraw never touches the grid or the labels.
+        barsContainer.frame = CGRect(x: 0.0, y: 0.0, width: bounds.width, height: chartHeight)
         rebuildBars(animated: false)
     }
 
